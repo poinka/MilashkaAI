@@ -1,71 +1,57 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, validator
+from typing import Optional, List, Dict, Any
+from datetime import datetime
 
-# --- Document Schemas ---
-class DocumentUploadRequest(BaseModel):
-    # FastAPI handles file uploads separately, so we might not need file content here.
-    # We might need metadata though.
-    filename: str
-    # content_type: str # Provided by FastAPI UploadFile
-
-class DocumentMetadata(BaseModel):
-    doc_id: str = Field(..., description="Unique identifier for the document")
-    filename: str
-    status: str = Field(default="processing", description="Status like processing, indexed, error")
-    error_message: Optional[str] = None
-
-# --- Completion Schemas ---
 class CompletionRequest(BaseModel):
-    current_text: str = Field(..., description="The text preceding the cursor")
-    full_document_context: Optional[str] = Field(None, description="Optional full document context")
-    language: str = Field(default="ru", description="Language for completion (e.g., 'ru', 'en')")
-    # Add other parameters like max_tokens, temperature if needed
+    current_text: str = Field(..., min_length=1, max_length=10000)
+    full_document_context: Optional[str] = Field(None, max_length=50000)
+    language: str = Field(default="ru", pattern="^(ru|en)$")
 
 class CompletionResponse(BaseModel):
-    suggestion: str = Field(..., description="The suggested text completion")
+    suggestion: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    metadata: Optional[Dict[str, Any]] = None
 
-# --- Voice Schemas ---
-class VoiceInputRequest(BaseModel):
-    # Audio data will likely be sent as a file upload
-    language: str = Field(default="ru", description="Language of the speech (e.g., 'ru', 'en')")
-
-class VoiceTranscriptionResponse(BaseModel):
-    raw_transcription: str
-    formatted_transcription: Optional[str] = None # Formatted by Gemma
-
-class StructuredRequirement(BaseModel):
-    actor: Optional[str] = None
-    action: Optional[str] = None
-    object: Optional[str] = None
-    result: Optional[str] = None
-
-class VoiceToRequirementResponse(BaseModel):
-    structured_requirement: StructuredRequirement
-    original_transcription: str
-
-# --- Editing Schemas ---
 class EditRequest(BaseModel):
-    selected_text: str = Field(..., description="The text selected by the user")
-    prompt: str = Field(..., description="User's instruction for editing (text or voice transcription)")
-    language: str = Field(default="ru", description="Language for editing (e.g., 'ru', 'en')")
+    selected_text: str = Field(..., min_length=1, max_length=10000)
+    prompt: str = Field(..., min_length=1, max_length=1000)
+    language: str = Field(default="ru", pattern="^(ru|en)$")
 
 class EditResponse(BaseModel):
-    edited_text: str = Field(..., description="The resulting edited text")
+    edited_text: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    alternatives: Optional[List[str]] = None
+    warning: Optional[str] = None
 
-# --- RAG Schemas ---
-class RagQueryRequest(BaseModel):
-    query_text: str
-    top_k: int = 5 # Number of relevant chunks to retrieve
+class DocumentMetadata(BaseModel):
+    doc_id: str
+    filename: str
+    status: str = Field(pattern="^(processing|indexed|error)$")
+    created_at: datetime
+    updated_at: datetime
+    error: Optional[str] = None
 
-class RagChunk(BaseModel):
+class VoiceTranscriptionRequest(BaseModel):
+    language: str = Field(default="ru", pattern="^(ru|en)$")
+
+    @validator('language')
+    def validate_language(cls, v):
+        if v.lower() not in ['ru', 'en']:
+            raise ValueError('Language must be either "ru" or "en"')
+        return v.lower()
+
+class VoiceTranscriptionResponse(BaseModel):
     text: str
-    score: float
-    metadata: Optional[dict] = None # e.g., source document, location
+    is_final: bool = True
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
-class RagQueryResponse(BaseModel):
-    relevant_chunks: List[RagChunk]
+class RequirementComponents(BaseModel):
+    actor: str
+    action: str
+    object: str
+    result: str
 
-# --- General Schemas ---
-class StatusResponse(BaseModel):
-    status: str
-    message: Optional[str] = None
+class RequirementExtractionResponse(BaseModel):
+    components: RequirementComponents
+    confidence: float = Field(ge=0.0, le=1.0)
+    raw_text: str

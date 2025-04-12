@@ -5,9 +5,50 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>MilashkaAI Assistant</h1>
-  <p>Upload documents or manage settings.</p>
-  <!-- Add file upload form -->
+  <div class="container">
+    <h1>MilashkaAI Assistant</h1>
+    
+    <div class="upload-section">
+      <form id="upload-form">
+        <div class="file-drop-zone" id="drop-zone">
+          <input type="file" id="file-input" multiple accept=".pdf,.docx,.txt,.md" style="display: none;">
+          <div class="drop-zone-text">
+            Drop files here or click to upload<br>
+            <small>Supported: PDF, DOCX, TXT, Markdown</small>
+          </div>
+        </div>
+        <button type="submit" id="upload-button" disabled>Upload Files</button>
+      </form>
+      <div id="upload-progress" class="progress-container" style="display: none;">
+        <div class="progress-bar"></div>
+        <div class="progress-text">0%</div>
+      </div>
+    </div>
+
+    <div class="documents-section">
+      <h2>Uploaded Documents</h2>
+      <div class="document-filters">
+        <select id="status-filter">
+          <option value="all">All Status</option>
+          <option value="processing">Processing</option>
+          <option value="indexed">Indexed</option>
+          <option value="error">Error</option>
+        </select>
+        <input type="search" id="search-docs" placeholder="Search documents...">
+      </div>
+      <ul id="document-list" class="document-list">
+        <!-- Documents will be listed here -->
+      </ul>
+    </div>
+
+    <div id="voice-control" class="voice-control">
+      <button id="voice-toggle" class="voice-button">
+        <span class="voice-icon">🎙️</span>
+        <span class="voice-status">Start Voice Input</span>
+      </button>
+      <div id="voice-feedback" class="voice-feedback"></div>
+    </div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

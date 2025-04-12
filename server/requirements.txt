@@ -1,27 +1,35 @@
+# Core dependencies
 fastapi
 uvicorn[standard]
 pydantic
-pydantic-settings # For loading settings from .env
+pydantic-settings
 python-dotenv
-transformers[torch] # Includes base transformers and torch
-torch
-accelerate # For optimized model loading/inference
-bitsandbytes # For 4-bit quantization
-optimum # For potential model optimization
-spacy # Core NLP library
-# Download spacy models separately, e.g., python -m spacy download en_core_web_sm
-spacy-transformers # For integrating transformer models with spacy (if needed)
-spacy-layout # For layout-aware document parsing
+websockets
+
+# Model and ML dependencies
+transformers[torch]
+torch>=2.0.0
+accelerate
+bitsandbytes>=0.41.0
+optimum
+spacy>=3.7.0
+spacy-transformers
+spacy-layout
+sentence-transformers
+soundfile
+librosa
+resampy
+numpy>=1.24.0
+
+# Database
 falkordb
-redis # FalkorDB Python client dependency
-sentence-transformers # For the default embedding model
-# Add Whisper model library if needed (already included in transformers)
-# Add PDF/DOCX/Markdown parsing libraries
+redis>=5.0.0
+
+# Document processing
 pypdf
 python-docx
 markdown
-# For potential HTML stripping from markdown
 beautifulsoup4
-# For audio handling if needed beyond bytes
-# soundfile
-# librosa
+
+# Form handling
+python-multipart

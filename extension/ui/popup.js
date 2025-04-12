@@ -1,95 +1,313 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Elements
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('file-input');
-    const statusDiv = document.getElementById('upload-status');
+    const dropZone = document.getElementById('drop-zone');
+    const uploadButton = document.getElementById('upload-button');
+    const progressBar = document.querySelector('.progress-bar');
+    const progressText = document.querySelector('.progress-text');
+    const progressContainer = document.getElementById('upload-progress');
     const docList = document.getElementById('document-list');
+    const statusFilter = document.getElementById('status-filter');
+    const searchInput = document.getElementById('search-docs');
+    const voiceToggle = document.getElementById('voice-toggle');
+    const voiceFeedback = document.getElementById('voice-feedback');
 
-    // --- File Upload ---
-    if (uploadForm && fileInput && statusDiv) {
-        uploadForm.addEventListener('submit', (event) => {
-            event.preventDefault();
-            const file = fileInput.files[0];
-            if (!file) {
-                statusDiv.textContent = 'Please select a file.';
-                statusDiv.style.color = 'red';
-                return;
+    let selectedFiles = new Set();
+    let isUploading = false;
+    let isRecording = false;
+
+    // --- Drag and Drop Handling ---
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.add('drag-over');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.remove('drag-over');
+        });
+    });
+
+    dropZone.addEventListener('drop', handleDrop);
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        handleFiles(files);
+    }
+
+    fileInput.addEventListener('change', (e) => {
+        handleFiles(e.target.files);
+    });
+
+    function handleFiles(files) {
+        if (isUploading) return;
+
+        const validFiles = Array.from(files).filter(file => {
+            const ext = file.name.toLowerCase().split('.').pop();
+            return ['pdf', 'docx', 'txt', 'md'].includes(ext);
+        });
+
+        if (validFiles.length === 0) {
+            showError('No valid files selected. Supported formats: PDF, DOCX, TXT, MD');
+            return;
+        }
+
+        selectedFiles = new Set(validFiles);
+        updateUploadButton();
+        showFileList();
+    }
+
+    function updateUploadButton() {
+        uploadButton.disabled = selectedFiles.size === 0;
+        uploadButton.textContent = `Upload ${selectedFiles.size} File${selectedFiles.size !== 1 ? 's' : ''}`;
+    }
+
+    function showFileList() {
+        const fileList = document.createElement('div');
+        fileList.className = 'selected-files';
+        selectedFiles.forEach(file => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'selected-file';
+            fileItem.innerHTML = `
+                <span>${file.name}</span>
+                <button class="remove-file" data-name="${file.name}">&times;</button>
+            `;
+            fileList.appendChild(fileItem);
+        });
+        
+        const existingList = dropZone.querySelector('.selected-files');
+        if (existingList) {
+            dropZone.removeChild(existingList);
+        }
+        dropZone.appendChild(fileList);
+
+        // Add remove handlers
+        fileList.querySelectorAll('.remove-file').forEach(button => {
+            button.onclick = (e) => {
+                e.stopPropagation();
+                const fileName = button.dataset.name;
+                selectedFiles = new Set(Array.from(selectedFiles).filter(f => f.name !== fileName));
+                updateUploadButton();
+                showFileList();
+            };
+        });
+    }
+
+    // --- File Upload Handling ---
+    uploadForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (isUploading || selectedFiles.size === 0) return;
+
+        isUploading = true;
+        uploadButton.disabled = true;
+        progressContainer.style.display = 'block';
+        
+        try {
+            for (const file of selectedFiles) {
+                await uploadFile(file);
             }
+            
+            showSuccess('All files uploaded successfully');
+            selectedFiles.clear();
+            updateUploadButton();
+            showFileList();
+            loadDocumentList();
+            
+        } catch (error) {
+            showError('Upload failed: ' + error.message);
+        } finally {
+            isUploading = false;
+            progressContainer.style.display = 'none';
+        }
+    });
 
-            statusDiv.textContent = `Uploading ${file.name}...`;
-            statusDiv.style.color = 'black';
+    async function uploadFile(file) {
+        const reader = new FileReader();
+        
+        return new Promise((resolve, reject) => {
+            reader.onload = async (e) => {
+                try {
+                    const response = await chrome.runtime.sendMessage({
+                        type: "UPLOAD_DOCUMENT",
+                        filename: file.name,
+                        filetype: file.type,
+                        fileData: e.target.result
+                    });
 
-            // Read file as ArrayBuffer to send to background script
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const fileData = e.target.result;
-                chrome.runtime.sendMessage({
-                    type: "UPLOAD_DOCUMENT",
-                    filename: file.name,
-                    filetype: file.type,
-                    fileData: fileData // Send ArrayBuffer
-                }, (response) => {
-                     if (chrome.runtime.lastError) {
-                        console.error("Upload message error:", chrome.runtime.lastError.message);
-                        statusDiv.textContent = `Error: ${chrome.runtime.lastError.message}`;
-                        statusDiv.style.color = 'red';
-                        return;
-                    }
-                    if (response && response.success) {
-                        statusDiv.textContent = `Upload successful: ${response.metadata.filename} (ID: ${response.metadata.doc_id}). Status: ${response.metadata.status}`;
-                        statusDiv.style.color = 'green';
-                        // Refresh document list after successful upload
-                        loadDocumentList();
+                    if (response.success) {
+                        updateProgress((Array.from(selectedFiles).indexOf(file) + 1) / selectedFiles.size * 100);
+                        resolve(response);
                     } else {
-                        statusDiv.textContent = `Upload failed: ${response?.error || 'Unknown error'}`;
-                        statusDiv.style.color = 'red';
+                        reject(new Error(response.error));
                     }
-                });
+                } catch (error) {
+                    reject(error);
+                }
             };
-            reader.onerror = (e) => {
-                 statusDiv.textContent = 'Error reading file.';
-                 statusDiv.style.color = 'red';
-                 console.error("File reading error:", e);
-            };
+
+            reader.onerror = () => reject(new Error('File reading failed'));
             reader.readAsArrayBuffer(file);
         });
-    } else {
-        console.error("Could not find upload form elements in popup.html");
     }
 
-    // --- Document List ---
-    function loadDocumentList() {
+    function updateProgress(percent) {
+        progressBar.style.width = `${percent}%`;
+        progressText.textContent = `${Math.round(percent)}%`;
+    }
+
+    // --- Document List Handling ---
+    async function loadDocumentList() {
         if (!docList) return;
 
-        docList.innerHTML = '<li>Loading document list...</li>'; // Clear and show loading
-        chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" }, (response) => {
-             if (chrome.runtime.lastError) {
-                console.error("List documents error:", chrome.runtime.lastError.message);
-                docList.innerHTML = `<li>Error loading list: ${chrome.runtime.lastError.message}</li>`;
-                return;
-            }
-            if (response && response.success) {
-                docList.innerHTML = ''; // Clear loading message
-                if (response.documents && response.documents.length > 0) {
-                    response.documents.forEach(doc => {
-                        const li = document.createElement('li');
-                        li.textContent = `${doc.filename} (Status: ${doc.status || 'unknown'})`;
-                        // Add button or link to check status in more detail?
-                        docList.appendChild(li);
-                    });
-                } else {
-                    docList.innerHTML = '<li>No documents uploaded yet.</li>';
-                }
+        try {
+            const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
+            
+            if (response.success) {
+                renderDocumentList(response.documents);
             } else {
-                docList.innerHTML = `<li>Failed to load documents: ${response?.error || 'Unknown error'}</li>`;
+                showError('Failed to load documents: ' + response.error);
+            }
+        } catch (error) {
+            showError('Error loading documents: ' + error.message);
+        }
+    }
+
+    function renderDocumentList(documents) {
+        const filteredDocs = filterDocuments(documents);
+        docList.innerHTML = '';
+
+        if (filteredDocs.length === 0) {
+            docList.innerHTML = '<li class="no-documents">No documents found</li>';
+            return;
+        }
+
+        filteredDocs.forEach(doc => {
+            const li = document.createElement('li');
+            li.innerHTML = `
+                <div class="doc-info">
+                    <span class="doc-name">${doc.filename}</span>
+                    <span class="status-badge status-${doc.status}">${doc.status}</span>
+                </div>
+                <button class="delete-doc" data-id="${doc.doc_id}">&times;</button>
+            `;
+            docList.appendChild(li);
+        });
+
+        // Add delete handlers
+        docList.querySelectorAll('.delete-doc').forEach(button => {
+            button.onclick = async () => {
+                if (confirm('Delete this document?')) {
+                    try {
+                        const response = await chrome.runtime.sendMessage({
+                            type: "DELETE_DOCUMENT",
+                            doc_id: button.dataset.id
+                        });
+                        if (response.success) {
+                            loadDocumentList();
+                        } else {
+                            showError('Failed to delete document: ' + response.error);
+                        }
+                    } catch (error) {
+                        showError('Error deleting document: ' + error.message);
+                    }
+                }
+            };
+        });
+    }
+
+    function filterDocuments(documents) {
+        const status = statusFilter.value;
+        const search = searchInput.value.toLowerCase();
+        
+        return documents.filter(doc => {
+            const matchesStatus = status === 'all' || doc.status === status;
+            const matchesSearch = doc.filename.toLowerCase().includes(search);
+            return matchesStatus && matchesSearch;
+        });
+    }
+
+    // --- Voice Input Handling ---
+    voiceToggle?.addEventListener('click', toggleVoiceInput);
+
+    function toggleVoiceInput() {
+        if (isRecording) {
+            stopVoiceInput();
+        } else {
+            startVoiceInput();
+        }
+    }
+
+    function startVoiceInput() {
+        chrome.runtime.sendMessage({ type: "START_VOICE_INPUT" }, (response) => {
+            if (response.success) {
+                isRecording = true;
+                voiceToggle.classList.add('recording');
+                voiceToggle.querySelector('.voice-status').textContent = 'Stop Recording';
+                voiceFeedback.style.display = 'block';
+                voiceFeedback.textContent = 'Listening...';
+            } else {
+                showError('Failed to start voice input: ' + response.error);
             }
         });
     }
 
-    // Load document list when popup opens
-    if (docList) {
-        loadDocumentList();
-    } else {
-         console.error("Could not find document list element in popup.html");
+    function stopVoiceInput() {
+        chrome.runtime.sendMessage({ type: "STOP_VOICE_INPUT" }, (response) => {
+            isRecording = false;
+            voiceToggle.classList.remove('recording');
+            voiceToggle.querySelector('.voice-status').textContent = 'Start Voice Input';
+            voiceFeedback.style.display = 'none';
+        });
     }
 
+    // --- UI Feedback ---
+    function showError(message) {
+        const toast = document.createElement('div');
+        toast.className = 'toast error';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+    }
+
+    function showSuccess(message) {
+        const toast = document.createElement('div');
+        toast.className = 'toast success';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    // --- Event Listeners ---
+    statusFilter?.addEventListener('change', () => {
+        loadDocumentList();
+    });
+
+    searchInput?.addEventListener('input', () => {
+        loadDocumentList();
+    });
+
+    // Initial load
+    loadDocumentList();
+
+    // Listen for messages from background script
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.type === "VOICE_FEEDBACK") {
+            if (voiceFeedback && isRecording) {
+                voiceFeedback.textContent = request.text;
+            }
+        }
+    });
 });

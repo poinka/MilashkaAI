@@ -1,161 +1,264 @@
-// Background service worker for handling API calls, context menus, etc.
-
-// --- Configuration ---
-// TODO: Make this configurable via options page
-const API_BASE_URL = 'http://localhost:8000/api/v1'; // Default backend URL
-
-// --- Context Menu Setup ---
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "milashkaEdit",
-    title: "MilashkaAI Edit...", // Placeholder, might be replaced by floating menu
-    contexts: ["selection"]
-  });
-  console.log("MilashkaAI context menu created.");
-});
-
-// Listener for context menu clicks (might be superseded by floating menu in content.js)
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "milashkaEdit" && info.selectionText) {
-    // Send message to content script to handle the edit UI
-    chrome.tabs.sendMessage(tab.id, {
-      type: "SHOW_EDIT_UI",
-      selectedText: info.selectionText
-    });
-  }
-});
-
-// --- API Call Functions ---
-
-async function fetchAPI(endpoint, options = {}, isJson = true) {
-  const url = `${API_BASE_URL}${endpoint}`;
-  console.log(`Fetching API: ${url}`, options);
-  try {
-    const response = await fetch(url, options);
-
-    if (!response.ok) {
-      let errorDetail = `HTTP error! status: ${response.status}`;
-      try {
-        const errorData = await response.json();
-        errorDetail += `, ${JSON.stringify(errorData.detail || errorData)}`;
-      } catch (e) { /* Ignore if error response is not JSON */ }
-      throw new Error(errorDetail);
+// Background service worker with task queue and error recovery
+class TaskQueue {
+    constructor() {
+        this.queue = [];
+        this.isProcessing = false;
+        this.retryDelays = [1000, 3000, 5000]; // Retry delays in ms
     }
 
-    if (isJson) {
-      return await response.json();
-    } else {
-      // For non-JSON responses like file uploads potentially returning metadata
-      return response; // Or response.text() if needed
+    async add(task) {
+        this.queue.push(task);
+        if (!this.isProcessing) {
+            await this.process();
+        }
     }
-  } catch (error) {
-    console.error(`API call failed for ${url}:`, error);
-    throw error; // Re-throw to be caught by the caller
-  }
+
+    async process() {
+        if (this.isProcessing || this.queue.length === 0) return;
+
+        this.isProcessing = true;
+        const task = this.queue[0];
+
+        try {
+            await this.executeWithRetry(task);
+            this.queue.shift(); // Remove completed task
+        } catch (error) {
+            console.error(`Task failed after all retries:`, error);
+            // Move failed task to the end or remove it
+            this.queue.shift();
+            // Could add to a failed tasks list for later recovery
+        } finally {
+            this.isProcessing = false;
+            if (this.queue.length > 0) {
+                await this.process(); // Process next task
+            }
+        }
+    }
+
+    async executeWithRetry(task, attempt = 0) {
+        try {
+            return await task();
+        } catch (error) {
+            if (attempt < this.retryDelays.length) {
+                await new Promise(resolve => 
+                    setTimeout(resolve, this.retryDelays[attempt])
+                );
+                return this.executeWithRetry(task, attempt + 1);
+            }
+            throw error; // No more retries
+        }
+    }
 }
 
-// --- Message Handling ---
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("Background received message:", request);
-
-  // Indicate that we will respond asynchronously
-  let keepChannelOpen = false;
-
-  if (request.type === "GET_COMPLETION") {
-    keepChannelOpen = true;
-    fetchAPI('/completion/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        current_text: request.current_text,
-        full_document_context: request.full_document_context,
-        language: request.language || 'ru' // Default language
-      })
-    })
-    .then(data => sendResponse({ success: true, suggestion: data.suggestion }))
-    .catch(error => sendResponse({ success: false, error: error.message }));
-
-  } else if (request.type === "UPLOAD_DOCUMENT") {
-    keepChannelOpen = true;
-    const formData = new FormData();
-    // The file object needs to be reconstructed if sent from content/popup script
-    // Assuming request.fileData contains necessary info (like ArrayBuffer, name, type)
-    // This part is tricky and might need adjustment based on how file is sent
-    if (request.fileData && request.filename && request.filetype) {
-       const blob = new Blob([request.fileData], { type: request.filetype });
-       formData.append('file', blob, request.filename);
-
-       fetchAPI('/documents/upload', {
-         method: 'POST',
-         body: formData
-         // Content-Type is set automatically by fetch for FormData
-       }, false) // Expecting metadata response, maybe JSON
-       .then(response => response.json()) // Now parse JSON
-       .then(data => sendResponse({ success: true, metadata: data }))
-       .catch(error => sendResponse({ success: false, error: error.message }));
-    } else {
-        sendResponse({ success: false, error: "Missing file data for upload." });
+class BackgroundService {
+    constructor() {
+        this.taskQueue = new TaskQueue();
+        this.activeConnections = new Map();
+        this.setupAPI();
+        this.setupContextMenus();
     }
 
+    setupAPI() {
+        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+            // Return true to indicate async response
+            this.handleMessage(request, sender, sendResponse);
+            return true;
+        });
+    }
 
-  } else if (request.type === "TRANSCRIBE_AUDIO") {
-    keepChannelOpen = true;
-    const formData = new FormData();
-    // Assuming request.audioData is ArrayBuffer or similar
-    const blob = new Blob([request.audioData], { type: request.audioType || 'audio/webm' }); // Adjust type if needed
-    formData.append('audio_file', blob, 'recording.webm'); // Filename might not matter much here
-    formData.append('language', request.language || 'ru');
+    setupContextMenus() {
+        chrome.contextMenus.removeAll(() => {
+            chrome.contextMenus.create({
+                id: "milashkaEdit",
+                title: "Edit with MilashkaAI...",
+                contexts: ["selection"]
+            });
+        });
 
-    fetchAPI('/voice/transcribe', {
-      method: 'POST',
-      body: formData
-    })
-    .then(data => sendResponse({ success: true, transcription: data }))
-    .catch(error => sendResponse({ success: false, error: error.message }));
+        chrome.contextMenus.onClicked.addListener((info, tab) => {
+            if (info.menuItemId === "milashkaEdit" && info.selectionText) {
+                chrome.tabs.sendMessage(tab.id, {
+                    type: "SHOW_EDIT_UI",
+                    selectedText: info.selectionText
+                });
+            }
+        });
+    }
 
-  } else if (request.type === "VOICE_TO_REQUIREMENT") {
-     keepChannelOpen = true;
-     const formData = new FormData();
-     const blob = new Blob([request.audioData], { type: request.audioType || 'audio/webm' });
-     formData.append('audio_file', blob, 'requirement_audio.webm');
-     formData.append('language', request.language || 'ru');
+    async handleMessage(request, sender, sendResponse) {
+        const handlers = {
+            GET_COMPLETION: () => this.handleCompletion(request),
+            UPLOAD_DOCUMENT: () => this.handleUpload(request),
+            TRANSCRIBE_AUDIO: () => this.handleTranscription(request),
+            EDIT_TEXT: () => this.handleEdit(request),
+            LIST_DOCUMENTS: () => this.handleListDocuments(),
+            DELETE_DOCUMENT: () => this.handleDeleteDocument(request),
+            START_VOICE_INPUT: () => this.handleStartVoice(sender.tab?.id),
+            STOP_VOICE_INPUT: () => this.handleStopVoice(sender.tab?.id)
+        };
 
-     fetchAPI('/voice/to-requirement', {
-       method: 'POST',
-       body: formData
-     })
-     .then(data => sendResponse({ success: true, result: data }))
-     .catch(error => sendResponse({ success: false, error: error.message }));
+        const handler = handlers[request.type];
+        if (!handler) {
+            sendResponse({ success: false, error: "Unknown request type" });
+            return;
+        }
 
-  } else if (request.type === "EDIT_TEXT") {
-    keepChannelOpen = true;
-    fetchAPI('/editing/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        selected_text: request.selected_text,
-        prompt: request.prompt,
-        language: request.language || 'ru'
-      })
-    })
-    .then(data => sendResponse({ success: true, edited_text: data.edited_text }))
-    .catch(error => sendResponse({ success: false, error: error.message }));
+        try {
+            const result = await this.taskQueue.add(() => handler());
+            sendResponse({ success: true, ...result });
+        } catch (error) {
+            console.error(`Error handling ${request.type}:`, error);
+            sendResponse({
+                success: false,
+                error: error.message || "Operation failed"
+            });
+        }
+    }
 
-  } else if (request.type === "GET_DOCUMENT_STATUS") {
-      keepChannelOpen = true;
-      fetchAPI(`/documents/status/${request.doc_id}`, { method: 'GET' })
-          .then(data => sendResponse({ success: true, status: data }))
-          .catch(error => sendResponse({ success: false, error: error.message }));
+    async handleCompletion(request) {
+        const response = await this.fetchAPI('/completion/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                current_text: request.current_text,
+                full_document_context: request.full_document_context,
+                language: request.language || 'ru'
+            })
+        });
+        return { suggestion: response.suggestion };
+    }
 
-  } else if (request.type === "LIST_DOCUMENTS") {
-      keepChannelOpen = true;
-      fetchAPI('/documents/', { method: 'GET' })
-          .then(data => sendResponse({ success: true, documents: data }))
-          .catch(error => sendResponse({ success: false, error: error.message }));
-  }
+    async handleUpload(request) {
+        const formData = new FormData();
+        const blob = new Blob([request.fileData], { type: request.filetype });
+        formData.append('file', blob, request.filename);
 
-  // Return true to keep the message channel open for asynchronous responses
-  return keepChannelOpen;
-});
+        const response = await this.fetchAPI('/documents/upload', {
+            method: 'POST',
+            body: formData
+        });
+        return { metadata: response };
+    }
 
-console.log("MilashkaAI background script loaded.");
+    async handleTranscription(request) {
+        const formData = new FormData();
+        const blob = new Blob([request.audioData], { type: request.audioType || 'audio/webm' });
+        formData.append('audio_file', blob);
+        formData.append('language', request.language || 'ru');
+
+        const response = await this.fetchAPI('/voice/transcribe', {
+            method: 'POST',
+            body: formData
+        });
+        return { transcription: response.text };
+    }
+
+    async handleEdit(request) {
+        const response = await this.fetchAPI('/editing/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                selected_text: request.selected_text,
+                prompt: request.prompt,
+                language: request.language || 'ru'
+            })
+        });
+        return {
+            edited_text: response.edited_text,
+            confidence: response.confidence,
+            alternatives: response.alternatives,
+            warning: response.warning
+        };
+    }
+
+    async handleListDocuments() {
+        const response = await this.fetchAPI('/documents/', {
+            method: 'GET'
+        });
+        return { documents: response };
+    }
+
+    async handleDeleteDocument(request) {
+        const response = await this.fetchAPI(`/documents/${request.doc_id}`, {
+            method: 'DELETE'
+        });
+        return { status: response.status };
+    }
+
+    async handleStartVoice(tabId) {
+        if (!tabId) return { error: "No active tab" };
+        
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const connection = {
+            stream: mediaStream,
+            recorder: new MediaRecorder(mediaStream)
+        };
+
+        this.activeConnections.set(tabId, connection);
+        
+        connection.recorder.ondataavailable = async (event) => {
+            if (event.data.size > 0) {
+                try {
+                    const response = await this.handleTranscription({
+                        audioData: await event.data.arrayBuffer(),
+                        audioType: event.data.type
+                    });
+                    
+                    chrome.tabs.sendMessage(tabId, {
+                        type: "VOICE_FEEDBACK",
+                        text: response.transcription
+                    });
+                } catch (error) {
+                    console.error("Transcription error:", error);
+                }
+            }
+        };
+
+        connection.recorder.start(1000); // Capture in 1-second chunks
+        return { success: true };
+    }
+
+    handleStopVoice(tabId) {
+        if (!tabId) return { error: "No active tab" };
+        
+        const connection = this.activeConnections.get(tabId);
+        if (connection) {
+            connection.recorder.stop();
+            connection.stream.getTracks().forEach(track => track.stop());
+            this.activeConnections.delete(tabId);
+        }
+        return { success: true };
+    }
+
+    async fetchAPI(endpoint, options = {}) {
+        const apiUrl = await this.getApiUrl();
+        const url = `${apiUrl}${endpoint}`;
+        
+        const response = await fetch(url, {
+            ...options,
+            headers: {
+                ...options.headers,
+                'X-Client-Version': chrome.runtime.getManifest().version
+            }
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(error.detail || 'API request failed');
+        }
+
+        return response.json();
+    }
+
+    async getApiUrl() {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['apiUrl'], (result) => {
+                resolve(result.apiUrl || 'http://localhost:8000/api/v1');
+            });
+        });
+    }
+}
+
+// Initialize the background service
+const backgroundService = new BackgroundService();
+console.log("MilashkaAI background service initialized.");

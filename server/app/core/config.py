@@ -1,23 +1,36 @@
-import os
+from typing import List
 from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
-
-# Load .env file if it exists (especially for local development)
-load_dotenv()
 
 class Settings(BaseSettings):
+    # Database settings
     FALKORDB_HOST: str = "localhost"
     FALKORDB_PORT: int = 6379
-    FALKORDB_PASSWORD: str | None = None
-    GEMMA_MODEL_ID: str = "google/gemma-1.1-2b-it" # Default, can be overridden by .env
+    
+    # Model settings
+    GEMMA_MODEL_ID: str = "google/gemma-1.1-2b-it"
     WHISPER_MODEL_ID: str = "openai/whisper-small"
     EMBEDDING_MODEL_ID: str = "sentence-transformers/all-MiniLM-L6-v2"
-    # Add other settings as needed, e.g., API keys, logging level
+    
+    # Performance settings
+    BATCH_SIZE: int = 32
+    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
+    CHUNK_SIZE: int = 8192
+    
+    # RAG settings
+    RAG_TOP_K: int = 5
+    RAG_SIMILARITY_THRESHOLD: float = 0.7
+    VECTOR_DIMENSION: int = 384
+    
+    # Document processing
+    MAX_DOCUMENT_SIZE: int = 50 * 1024 * 1024  # 50MB
+    SUPPORTED_FORMATS: List[str] = [".pdf", ".docx", ".txt", ".md"]
+    
+    # Voice processing
+    MAX_AUDIO_DURATION: int = 60  # Seconds
+    SUPPORTED_AUDIO_FORMATS: List[str] = ["audio/webm", "audio/wav", "audio/mp3"]
 
     class Config:
-        # If you have a .env file, variables there will override defaults
         env_file = ".env"
         env_file_encoding = 'utf-8'
-        extra = 'ignore' # Ignore extra fields from .env
 
 settings = Settings()

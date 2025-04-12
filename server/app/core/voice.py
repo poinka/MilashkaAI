@@ -1,14 +1,69 @@
 # server/app/core/voice.py
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, AsyncGenerator
+from pathlib import Path
+import io
+import numpy as np
+import soundfile as sf
+from fastapi import HTTPException, UploadFile
+import asyncio
+import torch
 
-# Import necessary components
 from app.core.models import get_asr_pipeline, get_llm
-import torch # For tensor operations if needed
+from app.core.config import settings
 
-# Constants
-MAX_FORMAT_TOKENS = 256 # Max tokens for Gemma formatting task
-MAX_REQUIREMENT_TOKENS = 512 # Max tokens for requirement extraction
+class AudioProcessor:
+    def __init__(self):
+        self.sample_rate = 16000  # Standard for Whisper
+        self.supported_formats = settings.SUPPORTED_AUDIO_FORMATS
+        self.max_duration = settings.MAX_AUDIO_DURATION
+
+    async def validate_audio(self, file: UploadFile) -> None:
+        if file.content_type not in self.supported_formats:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format. Supported: {', '.join(self.supported_formats)}"
+            )
+
+        # Read first chunk to validate format
+        first_chunk = await file.read(8192)
+        await file.seek(0)  # Reset position
+
+        try:
+            with io.BytesIO(first_chunk) as buf:
+                with sf.SoundFile(buf) as f:
+                    duration = len(f) / f.samplerate
+                    if duration > self.max_duration:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Audio duration exceeds limit of {self.max_duration} seconds"
+                        )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid audio file: {str(e)}"
+            )
+
+    async def process_audio(self, file: UploadFile) -> np.ndarray:
+        await self.validate_audio(file)
+        
+        # Read and convert audio to the correct format for Whisper
+        audio_bytes = await file.read()
+        try:
+            with io.BytesIO(audio_bytes) as buf:
+                data, samplerate = sf.read(buf)
+                if samplerate != self.sample_rate:
+                    # Resample if necessary
+                    import resampy
+                    data = resampy.resample(data, samplerate, self.sample_rate)
+                if len(data.shape) > 1:
+                    data = data.mean(axis=1)  # Convert stereo to mono
+                return data
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error processing audio: {str(e)}"
+            )
 
 async def transcribe_audio(audio_bytes: bytes, language: str) -> str:
     """
@@ -16,159 +71,235 @@ async def transcribe_audio(audio_bytes: bytes, language: str) -> str:
     """
     logging.info(f"Transcribing audio (language: {language})...")
     asr_pipeline = get_asr_pipeline()
+    audio_processor = AudioProcessor()
 
     try:
-        # The pipeline expects audio input, often as a file path or numpy array.
-        # We have bytes, so we might need to adapt or use a library like soundfile/librosa
-        # if the pipeline doesn't handle bytes directly.
-        # Let's assume the pipeline can handle bytes for now, but this might need adjustment.
+        # Process audio file
+        audio_data = await audio_processor.process_audio(audio_bytes)
 
-        # Check if language needs mapping (Whisper uses language codes/names)
-        # The pipeline might handle this automatically or require specific codes.
-        # Forcing decode in multilingual models:
-        generate_kwargs = {}
-        if language:
-             # Map common codes if needed, e.g., 'ru' -> 'russian'
-             lang_map = {'ru': 'russian', 'en': 'english'}
-             whisper_lang = lang_map.get(language.lower())
-             if whisper_lang:
-                 generate_kwargs = {"language": whisper_lang, "task": "transcribe"}
-                 logging.info(f"Setting Whisper language to: {whisper_lang}")
+        # Map language codes
+        lang_map = {'ru': 'russian', 'en': 'english'}
+        whisper_lang = lang_map.get(language.lower(), language)
+        generate_kwargs = {"language": whisper_lang, "task": "transcribe"}
 
+        # Set up device and data type
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            audio_data = torch.tensor(audio_data).cuda()
 
-        # Perform transcription
-        # The input format might need adjustment (e.g., {"raw": audio_bytes, "sampling_rate": 16000})
-        # Check the specific pipeline's documentation. Assuming it takes bytes directly:
-        result = asr_pipeline(audio_bytes, generate_kwargs=generate_kwargs)
+        # Transcribe with timeout
+        async def transcribe_with_timeout():
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    asr_pipeline,
+                    audio_data,
+                    generate_kwargs=generate_kwargs,
+                    batch_size=settings.BATCH_SIZE
+                ),
+                timeout=settings.MODEL_TIMEOUT
+            )
 
-        transcription = result["text"]
+        result = await transcribe_with_timeout()
+        transcription = result["text"].strip()
+
         logging.info(f"Transcription result: '{transcription[:100]}...'")
-        return transcription.strip()
+        return transcription
 
+    except asyncio.TimeoutError:
+        logging.error("Transcription timed out")
+        raise HTTPException(
+            status_code=408,
+            detail="Transcription timed out"
+        )
     except Exception as e:
-        logging.error(f"Error during Whisper transcription: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to transcribe audio: {e}") from e
+        logging.error(f"Error during transcription: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Transcription failed: {str(e)}"
+        )
 
+async def stream_transcription(audio_stream: AsyncGenerator[bytes, None], language: str):
+    """
+    Streams transcription results as they become available.
+    """
+    buffer = io.BytesIO()
+    audio_processor = AudioProcessor()
+    chunk_duration = 0
+
+    async for chunk in audio_stream:
+        buffer.write(chunk)
+        
+        # Process complete chunks
+        if buffer.tell() >= settings.CHUNK_SIZE:
+            buffer_data = buffer.getvalue()
+            try:
+                # Process chunk
+                transcription = await transcribe_audio(buffer_data, language)
+                yield {"text": transcription, "is_final": False}
+            except Exception as e:
+                logging.error(f"Error processing chunk: {e}")
+                yield {"error": str(e), "is_final": False}
+            
+            # Reset buffer
+            buffer.seek(0)
+            buffer.truncate()
+
+    # Process any remaining audio
+    if buffer.tell() > 0:
+        try:
+            transcription = await transcribe_audio(buffer.getvalue(), language)
+            yield {"text": transcription, "is_final": True}
+        except Exception as e:
+            logging.error(f"Error processing final chunk: {e}")
+            yield {"error": str(e), "is_final": True}
 
 async def format_transcription(raw_transcription: str, language: str) -> str:
     """
-    Formats the raw transcription using Gemma (e.g., punctuation, capitalization).
+    Formats the raw transcription using Gemma with improved error handling.
     """
     logging.info(f"Formatting transcription (language: {language})...")
     model, tokenizer = get_llm()
 
-    prompt = f"""<start_of_turn>user
-Correct the punctuation, capitalization, and formatting of the following text in {language}. Make it read naturally. Do not change the meaning.
+    try:
+        # Construct prompt with clear formatting instructions
+        prompt = f"""<start_of_turn>user
+Format the following transcribed text in {language}. Apply these improvements:
+1. Fix punctuation and capitalization
+2. Remove filler words and hesitations
+3. Improve sentence structure while preserving meaning
+4. Fix any obvious transcription errors
 
 Text: "{raw_transcription}"<end_of_turn>
 <start_of_turn>model
 Formatted Text: """
 
-    try:
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_REQUIREMENT_TOKENS - MAX_FORMAT_TOKENS).to(model.device)
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=settings.MAX_INPUT_LENGTH
+        ).to(model.device)
 
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=MAX_FORMAT_TOKENS,
-            temperature=0.3, # Lower temperature for more deterministic formatting
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id # Set pad_token_id
-        )
+        # Generate with timeout
+        async def generate_with_timeout():
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    model.generate,
+                    **inputs,
+                    max_new_tokens=settings.MAX_NEW_TOKENS,
+                    temperature=0.3,
+                    do_sample=False,  # Deterministic for formatting
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.eos_token_id
+                ),
+                timeout=settings.MODEL_TIMEOUT
+            )
 
-        # Decode, skipping prompt and special tokens
+        outputs = await generate_with_timeout()
         generated_ids = outputs[0, inputs.input_ids.shape[1]:]
         formatted_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-        # Basic cleanup
-        formatted_text = formatted_text.strip().replace('"', '') # Remove potential leading/trailing quotes
+        # Clean up the formatted text
+        formatted_text = formatted_text.strip().replace('"', '')
+        if formatted_text.lower().startswith("formatted text:"):
+            formatted_text = formatted_text[len("formatted text:"):].strip()
 
-        logging.info(f"Formatted transcription: '{formatted_text[:100]}...'")
+        logging.info(f"Formatted text: '{formatted_text[:100]}...'")
         return formatted_text
 
+    except asyncio.TimeoutError:
+        logging.error("Formatting timed out")
+        return raw_transcription  # Fallback to raw text
     except Exception as e:
-        logging.error(f"Error formatting transcription with Gemma: {e}", exc_info=True)
-        # Return raw transcription as fallback? Or raise error?
-        # For now, return raw as a fallback
-        logging.warning("Falling back to raw transcription due to formatting error.")
-        return raw_transcription
-
+        logging.error(f"Error during formatting: {e}", exc_info=True)
+        return raw_transcription  # Fallback to raw text
 
 async def extract_requirements(transcription: str, language: str) -> Dict[str, Any]:
     """
-    Uses Gemma to extract structured requirements (Actor, Action, Object, Result)
-    from a transcribed text based on a template.
+    Extracts structured requirements with improved validation and error handling.
     """
-    logging.info(f"Extracting structured requirements from transcription (language: {language})...")
+    logging.info(f"Extracting requirements (language: {language})...")
     model, tokenizer = get_llm()
 
-    # Define the desired structure clearly in the prompt
-    prompt = f"""<start_of_turn>user
-Analyze the following text in {language} and extract the requirement components based on this template:
-- Actor: (The user role performing the action)
-- Action: (The action being performed)
-- Object: (The entity the action is performed on)
-- Result: (The expected outcome)
+    try:
+        prompt = f"""<start_of_turn>user
+Extract structured requirement components from this text in {language}. Break it down into:
 
-If a component is not mentioned, leave it blank. Output only the structured components.
+1. Actor: Who performs the action? (user role/system)
+2. Action: What specific action is taken?
+3. Object: What is the action performed on?
+4. Result: What is the expected outcome?
+
+Use these rules:
+- Keep components concise but clear
+- Use present tense
+- Start each component with a capital letter
+- If a component is not mentioned, write "Not specified"
 
 Text: "{transcription}"<end_of_turn>
 <start_of_turn>model
-Actor: """ # Prompt the model to start filling the template
+Actor: """
 
-    try:
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_REQUIREMENT_TOKENS - 100).to(model.device) # Reserve tokens for output
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=settings.MAX_INPUT_LENGTH
+        ).to(model.device)
 
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=100, # Max tokens for the structured output
-            temperature=0.2, # Low temperature for structured extraction
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id
-        )
+        async def generate_with_timeout():
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    model.generate,
+                    **inputs,
+                    max_new_tokens=settings.MAX_NEW_TOKENS,
+                    temperature=0.2,
+                    do_sample=False,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.eos_token_id
+                ),
+                timeout=settings.MODEL_TIMEOUT
+            )
 
-        # Decode the generated part
+        outputs = await generate_with_timeout()
         generated_ids = outputs[0, inputs.input_ids.shape[1]:]
-        structured_output_raw = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        logging.debug(f"Raw structured output from Gemma: {structured_output_raw}")
+        structured_output = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-        # Parse the generated string to extract components
-        # This parsing needs to be robust to variations in Gemma's output format
+        # Parse and validate the structured output
         requirements = {
-            "actor": None,
-            "action": None,
-            "object": None,
-            "result": None
+            "actor": "Not specified",
+            "action": "Not specified",
+            "object": "Not specified",
+            "result": "Not specified"
         }
-        # Prepend "Actor: " to match the expected start
-        full_output = "Actor: " + structured_output_raw
-        lines = [line.strip() for line in full_output.split('\n') if ':' in line]
-        for line in lines:
-            try:
-                key, value = line.split(':', 1)
-                key_lower = key.strip().lower()
-                value_strip = value.strip()
-                if value_strip and value_strip.lower() != 'none' and value_strip.lower() != 'blank':
-                    if key_lower == "actor":
-                        requirements["actor"] = value_strip
-                    elif key_lower == "action":
-                        requirements["action"] = value_strip
-                    elif key_lower == "object":
-                        requirements["object"] = value_strip
-                    elif key_lower == "result":
-                        requirements["result"] = value_strip
-            except ValueError:
-                logging.warning(f"Could not parse line in structured output: '{line}'")
-                continue # Skip malformed lines
+
+        # Parse line by line with validation
+        current_field = None
+        for line in structured_output.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+
+            if ':' in line:
+                field, value = line.split(':', 1)
+                field = field.strip().lower()
+                value = value.strip()
+
+                if field in requirements and value and value.lower() not in ['none', 'not specified', 'blank', '']:
+                    requirements[field] = value
+
+        # Validate structure
+        for key, value in requirements.items():
+            if value != "Not specified":
+                # Ensure proper capitalization
+                requirements[key] = value[0].upper() + value[1:]
 
         logging.info(f"Extracted requirements: {requirements}")
         return requirements
 
+    except asyncio.TimeoutError:
+        logging.error("Requirements extraction timed out")
+        return {k: "Extraction timed out" for k in ["actor", "action", "object", "result"]}
     except Exception as e:
-        logging.error(f"Error extracting requirements with Gemma: {e}", exc_info=True)
-        # Return empty structure on failure
-        return {
-            "actor": None,
-            "action": None,
-            "object": None,
-            "result": None
-        }
+        logging.error(f"Error extracting requirements: {e}", exc_info=True)
+        return {k: "Error during extraction" for k in ["actor", "action", "object", "result"]}
