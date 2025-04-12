@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "MilashkaAI Text Assistant",
+  "version": "0.1.0",
+  "description": "AI-powered text completion and editing for system analysts.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "<all_urls>" // Be more specific in production if possible
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"], // Restrict matches for production
+      "js": ["content_scripts/content.js"],
+      "css": ["ui/styles.css"]
+    }
+  ],
+  "action": {
+    "default_popup": "ui/popup.html",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "ui/options.html",
+    "open_in_tab": false
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["ui/*", "lib/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

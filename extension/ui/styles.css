@@ -1,0 +1,18 @@
+/* Basic styling for UI elements */
+body {
+  font-family: sans-serif;
+  width: 300px; /* Example width for popup */
+}
+
+.suggestion-text {
+  color: gray;
+}
+
+.context-menu {
+  /* Styles for the floating context menu */
+  position: absolute;
+  background-color: white;
+  border: 1px solid #ccc;
+  padding: 5px;
+  z-index: 10000;
+}
