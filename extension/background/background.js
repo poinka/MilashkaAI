@@ -94,7 +94,9 @@ class BackgroundService {
             LIST_DOCUMENTS: () => this.handleListDocuments(),
             DELETE_DOCUMENT: () => this.handleDeleteDocument(request),
             START_VOICE_INPUT: () => this.handleStartVoice(sender.tab?.id),
-            STOP_VOICE_INPUT: () => this.handleStopVoice(sender.tab?.id)
+            STOP_VOICE_INPUT: () => this.handleStopVoice(sender.tab?.id),
+            TRACK_SUGGESTION: () => this.handleTrackSuggestion(request),
+            FORMAT_TRANSCRIPTION: () => this.handleFormatTranscription(request)
         };
 
         const handler = handlers[request.type];

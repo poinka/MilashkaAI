@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.routers import documents, completion, voice, editing, rag
+from app.routers import documents, completion, voice, editing, rag, feedback
 from app.db.falkordb_client import get_db_connection, close_db_connection
 from app.core.models import load_models, unload_models
 
@@ -41,6 +41,7 @@ app.include_router(completion.router, prefix="/api/v1/completion", tags=["Comple
 app.include_router(voice.router, prefix="/api/v1/voice", tags=["Voice"])
 app.include_router(editing.router, prefix="/api/v1/editing", tags=["Editing"])
 app.include_router(rag.router, prefix="/api/v1/rag", tags=["RAG"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
 
 @app.get("/")
 async def read_root():

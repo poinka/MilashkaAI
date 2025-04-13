@@ -122,10 +122,38 @@ class SuggestionManager {
     acceptSuggestion() {
         if (this.currentSuggestion && this.activeInputElement) {
             this.insertText(this.activeInputElement, this.currentSuggestion);
+            
+            // Track suggestion acceptance for improving recommendations
+            this.trackSuggestionFeedback(true);
+            
             this.clearSuggestion();
             return true;
         }
         return false;
+    }
+    
+    trackSuggestionFeedback(wasAccepted) {
+        if (!this.currentSuggestion) return;
+        
+        // Get surrounding context for better recommendation improvement
+        let context = '';
+        if (this.activeInputElement && this.activeInputElement.value) {
+            const start = Math.max(0, this.activeInputElement.selectionStart - 200);
+            const end = Math.min(this.activeInputElement.value.length, this.activeInputElement.selectionStart + 200);
+            context = this.activeInputElement.value.substring(start, end);
+        }
+        
+        // Send feedback to the server
+        chrome.runtime.sendMessage({
+            type: "TRACK_SUGGESTION",
+            suggestion_text: this.currentSuggestion,
+            document_context: context,
+            was_accepted: wasAccepted,
+            source: "completion",
+            language: document.documentElement.lang || 'ru'
+        }).catch(err => {
+            console.error("Failed to track suggestion feedback:", err);
+        });
     }
 
     insertText(element, textToInsert) {
@@ -359,17 +387,235 @@ class EditingUI {
     }
 
     startVoiceEdit() {
-        // Implementation in voice handling section
-        chrome.runtime.sendMessage({
-            type: "START_VOICE_EDIT",
-            currentSelection: this.currentSelection
+        // Use Web Speech API for local streaming and then server for formatting
+        if (speechManager.isRecording) {
+            speechManager.stopRecording();
+            return;
+        }
+
+        const voiceButton = this.floatingMenu.querySelector('button:not([class*="submit"])');
+        const input = this.floatingMenu.querySelector('input');
+        
+        // Update button state
+        voiceButton.innerHTML = '⏹️';
+        voiceButton.style.backgroundColor = '#f44336';
+        
+        // Start recording with edit mode and callback
+        speechManager.startRecording(null, true, (formattedText) => {
+            // When transcription is complete and formatted, populate the input
+            if (input && this.floatingMenu) {
+                input.value = formattedText;
+                
+                // Reset button state
+                voiceButton.innerHTML = '🎙️';
+                voiceButton.style.backgroundColor = '#4CAF50';
+            }
         });
+    }
+}
+
+class SpeechManager {
+    constructor() {
+        this.recognition = null;
+        this.isRecording = false;
+        this.transcriptionElement = null;
+        this.finalTranscription = '';
+        this.interimTranscription = '';
+        this.targetElement = null;
+        this.isEditMode = false;
+        this.editCallback = null;
+        this.setupSpeechRecognition();
+    }
+
+    setupSpeechRecognition() {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            console.warn('Web Speech API is not supported in this browser');
+            return;
+        }
+
+        // Create SpeechRecognition object
+        const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+        this.recognition = new SpeechRecognitionAPI();
+        
+        // Configure recognition
+        this.recognition.continuous = true;
+        this.recognition.interimResults = true;
+        this.recognition.maxAlternatives = 1;
+        
+        // Set language dynamically
+        this.recognition.lang = document.documentElement.lang === 'ru' ? 'ru-RU' : 'en-US';
+        
+        // Set up event listeners
+        this.recognition.onstart = () => {
+            this.isRecording = true;
+            console.log('Speech recognition started');
+        };
+        
+        this.recognition.onend = () => {
+            this.isRecording = false;
+            console.log('Speech recognition ended');
+            this.removeTranscriptionElement();
+            
+            // Send final transcription to server for formatting if needed
+            if (this.finalTranscription) {
+                this.sendToServerForFormatting();
+            }
+        };
+        
+        this.recognition.onresult = (event) => {
+            this.interimTranscription = '';
+            let finalTranscript = '';
+            
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    this.interimTranscription += event.results[i][0].transcript;
+                }
+            }
+            
+            if (finalTranscript) {
+                this.finalTranscription += ' ' + finalTranscript;
+                this.finalTranscription = this.finalTranscription.trim();
+            }
+            
+            this.updateTranscriptionDisplay();
+        };
+        
+        this.recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            this.removeTranscriptionElement();
+        };
+    }
+    
+    startRecording(targetElement = null, isEditMode = false, callback = null) {
+        if (!this.recognition) {
+            console.error('Speech recognition not available');
+            return false;
+        }
+        
+        this.targetElement = targetElement;
+        this.isEditMode = isEditMode;
+        this.editCallback = callback;
+        this.finalTranscription = '';
+        this.interimTranscription = '';
+        
+        this.createTranscriptionElement();
+        
+        try {
+            this.recognition.start();
+            return true;
+        } catch (error) {
+            console.error('Error starting speech recognition:', error);
+            return false;
+        }
+    }
+    
+    stopRecording() {
+        if (this.recognition && this.isRecording) {
+            this.recognition.stop();
+        }
+    }
+    
+    createTranscriptionElement() {
+        this.removeTranscriptionElement(); // Remove previous element if exists
+        
+        this.transcriptionElement = document.createElement('div');
+        this.transcriptionElement.className = 'milashka-transcription';
+        Object.assign(this.transcriptionElement.style, {
+            position: 'fixed',
+            bottom: '20px',
+            left: '20px',
+            backgroundColor: 'rgba(255, 255, 255, 0.9)',
+            padding: '10px 15px',
+            borderRadius: '5px',
+            boxShadow: '0 2px 10px rgba(0, 0, 0, 0.2)',
+            zIndex: '1000000',
+            maxWidth: '500px',
+            maxHeight: '150px',
+            overflowY: 'auto',
+            fontSize: '14px',
+            lineHeight: '1.4'
+        });
+        
+        document.body.appendChild(this.transcriptionElement);
+    }
+    
+    updateTranscriptionDisplay() {
+        if (!this.transcriptionElement) return;
+        
+        const finalSpan = document.createElement('span');
+        finalSpan.textContent = this.finalTranscription;
+        
+        const interimSpan = document.createElement('span');
+        interimSpan.textContent = this.interimTranscription;
+        Object.assign(interimSpan.style, {
+            color: '#666',
+            fontStyle: 'italic'
+        });
+        
+        this.transcriptionElement.innerHTML = '';
+        if (this.finalTranscription) {
+            this.transcriptionElement.appendChild(finalSpan);
+        }
+        if (this.interimTranscription) {
+            if (this.finalTranscription) {
+                this.transcriptionElement.appendChild(document.createTextNode(' '));
+            }
+            this.transcriptionElement.appendChild(interimSpan);
+        }
+    }
+    
+    removeTranscriptionElement() {
+        if (this.transcriptionElement) {
+            this.transcriptionElement.remove();
+            this.transcriptionElement = null;
+        }
+    }
+    
+    async sendToServerForFormatting() {
+        if (!this.finalTranscription.trim()) return;
+        
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: "FORMAT_TRANSCRIPTION",
+                text: this.finalTranscription,
+                language: document.documentElement.lang || 'ru'
+            });
+            
+            if (response.success) {
+                const formattedText = response.formatted_text;
+                
+                if (this.isEditMode && this.editCallback) {
+                    // For editing mode, call the callback with formatted text
+                    this.editCallback(formattedText);
+                } else if (this.targetElement && isValidInputElement(this.targetElement)) {
+                    // For direct input mode, insert text at cursor position
+                    const start = this.targetElement.selectionStart || 0;
+                    const end = this.targetElement.selectionEnd || 0;
+                    const originalText = this.targetElement.value || '';
+                    
+                    this.targetElement.value = originalText.substring(0, start) + 
+                                              formattedText + 
+                                              originalText.substring(end);
+                    
+                    this.targetElement.selectionStart = 
+                    this.targetElement.selectionEnd = start + formattedText.length;
+                    
+                    this.targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                    this.targetElement.focus();
+                }
+            }
+        } catch (error) {
+            console.error("Failed to format transcription:", error);
+        }
     }
 }
 
 // Initialize managers
 const suggestionManager = new SuggestionManager();
 const editingUI = new EditingUI();
+const speechManager = new SpeechManager();
 
 // Text input handling
 function handleInput(event) {
@@ -426,6 +672,8 @@ document.addEventListener('keydown', (event) => {
                 event.preventDefault();
             }
         } else if (event.key === 'Escape') {
+            // Track rejection before clearing suggestion
+            suggestionManager.trackSuggestionFeedback(false);
             suggestionManager.clearSuggestion();
             event.preventDefault();
         }
