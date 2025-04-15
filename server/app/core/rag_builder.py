@@ -233,3 +233,40 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
     except Exception as e:
         logging.error(f"Error building RAG graph for doc_id {doc_id}: {e}", exc_info=True)
         raise
+
+
+async def reindex_document(doc_id: str, db=None):
+    """
+    Reindex a specific document: re-extracts text, rebuilds RAG graph, and updates embeddings.
+    """
+    import logging
+    from app.core.processing import extract_text_from_file
+    from app.db.falkordb_client import get_db_connection
+    from fastapi import HTTPException
+    import os
+
+    if db is None:
+        db = get_db_connection()
+
+    # Find the uploaded file for this doc_id
+    uploads_dir = os.getenv("UPLOADS_DIR", "/uploads")
+    file_path = os.path.join(uploads_dir, f"{doc_id}")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File for doc_id {doc_id} not found.")
+
+    # Simulate UploadFile for extract_text_from_file
+    class DummyUploadFile:
+        def __init__(self, filename):
+            self.filename = filename
+            self.file = open(filename, "rb")
+            self.content_type = None
+        async def read(self):
+            return self.file.read()
+        async def seek(self, pos):
+            self.file.seek(pos)
+
+    upload_file = DummyUploadFile(file_path)
+    text = await extract_text_from_file(upload_file)
+    await build_rag_graph_from_text(doc_id, os.path.basename(file_path), text)
+    # Optionally, count chunks (could be improved)
+    return {"chunks_indexed": "unknown"}
