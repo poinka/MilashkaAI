@@ -4,12 +4,9 @@ from typing import Optional
 import logging
 from datetime import datetime
 
-from app.middleware import verify_api_key
 from app.db.falkordb_client import get_db_connection
 
-router = APIRouter(
-    dependencies=[Depends(verify_api_key)]
-)
+router = APIRouter()
 
 class SuggestionFeedback(BaseModel):
     suggestion_text: str

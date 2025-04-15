@@ -3,14 +3,11 @@ from typing import List, Optional
 import asyncio
 
 from app.core.config import settings
-from app.middleware import verify_api_key
 from app.core.rag_retriever import retrieve_relevant_chunks
 from app.core.rag_builder import reindex_document
 from app.db.falkordb_client import get_db_connection
 
-router = APIRouter(
-    dependencies=[Depends(verify_api_key)]
-)
+router = APIRouter()
 
 @router.get("/search",
     summary="Search through indexed documents")

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   server:
     build:
@@ -17,12 +15,11 @@ services:
       - falkordb
 
   falkordb:
-    image: falkordb/falkordb:latest
+    image: falkordb/falkordb:v4.8.5-arm64v8
     ports:
       - "6379:6379"
     volumes:
       - falkordb_data:/data
-    command: ["redis-server", "--loadmodule", "/usr/lib/redis/modules/falkordb.so"]
 
 volumes:
   falkordb_data:

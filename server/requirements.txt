@@ -29,6 +29,6 @@ pypdf
 python-docx
 markdown
 beautifulsoup4
-
-# Form handling
 python-multipart
+spacy-layout
+aiofiles

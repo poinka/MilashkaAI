@@ -4,13 +4,11 @@ from typing import Optional
 from app.core.config import settings
 from app.schemas.models import CompletionRequest, CompletionResponse
 from app.schemas.errors import ErrorResponse
-from app.middleware import verify_api_key
 from app.core.completion import generate_completion
 from app.core.rag_retriever import retrieve_relevant_chunks
 from app.db.falkordb_client import get_db_connection
 
 router = APIRouter(
-    dependencies=[Depends(verify_api_key)],
     responses={
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},

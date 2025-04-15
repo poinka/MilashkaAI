@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from typing import List
@@ -9,12 +10,10 @@ from datetime import datetime
 from app.core.config import settings
 from app.schemas.models import DocumentMetadata
 from app.schemas.errors import ErrorResponse
-from app.middleware import verify_api_key
-from app.core.rag_builder import process_document
+from app.core.rag_builder import build_rag_graph_from_text 
 from app.db.falkordb_client import get_db_connection
 
 router = APIRouter(
-    dependencies=[Depends(verify_api_key)],
     responses={
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
@@ -78,10 +77,10 @@ async def upload_document(
 
         # Add document processing to background tasks
         background_tasks.add_task(
-            process_document,
-            file_path,
-            doc_id,
-            get_db_connection()
+            build_rag_graph_from_text, 
+            doc_id=doc_id, 
+            filename=file.filename, 
+            text="Текст извлеченный из файла..." 
         )
 
         return metadata

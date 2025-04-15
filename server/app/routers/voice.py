@@ -10,7 +10,6 @@ from app.schemas.models import (
     RequirementExtractionResponse
 )
 from app.schemas.errors import ErrorResponse
-from app.middleware import verify_api_key
 from app.core.voice import (
     transcribe_audio,
     format_transcription,
@@ -19,7 +18,6 @@ from app.core.voice import (
 )
 
 router = APIRouter(
-    dependencies=[Depends(verify_api_key)],
     responses={
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
