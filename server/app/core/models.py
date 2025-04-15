@@ -17,7 +17,7 @@ def load_models():
 
     # --- Load Gemma ---
     try:
-        print(f"Loading LLM: {settings.GEMMA_MODEL_ID}")
+        print(f"Loading LLM: {settings.YANDEX_MODEL_ID}")
         # Configure quantization (4-bit as requested)
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -26,20 +26,20 @@ def load_models():
             # bnb_4bit_use_double_quant=True, # Optional
         )
 
-        llm_tokenizer = AutoTokenizer.from_pretrained(settings.GEMMA_MODEL_ID)
+        llm_tokenizer = AutoTokenizer.from_pretrained(settings.YANDEX_MODEL_ID)
         llm_model = AutoModelForCausalLM.from_pretrained(
-            settings.GEMMA_MODEL_ID,
+            settings.YANDEX_MODEL_ID,
             quantization_config=quantization_config,
             # torch_dtype=torch.bfloat16, # Match compute_dtype if possible
             device_map="auto", # Automatically distribute across available GPUs/CPU
             # low_cpu_mem_usage=True, # Can help on systems with limited CPU RAM
             trust_remote_code=True # If required by the specific model version
         )
-        print("Gemma model loaded successfully.")
+        print("Yandex model loaded successfully.")
     except Exception as e:
-        logging.error(f"Failed to load Gemma model: {e}", exc_info=True)
+        logging.error(f"Failed to load Yandex model: {e}", exc_info=True)
         # Decide how to handle: raise error, fallback, etc.
-        raise RuntimeError(f"Failed to load Gemma model: {e}") from e
+        raise RuntimeError(f"Failed to load Yandex model: {e}") from e
 
     # --- Load Embedding Model ---
     try:

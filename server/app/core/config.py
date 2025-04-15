@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     FALKORDB_PORT: int = 6379
     
     # Model settings
-    GEMMA_MODEL_ID: str = "google/gemma-1.1-2b-it"
+    YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"
+    GEMMA_MODEL_ID: str = "google/gemma-3-4b-it"
     WHISPER_MODEL_ID: str = "openai/whisper-small"
     EMBEDDING_MODEL_ID: str = "sentence-transformers/all-MiniLM-L6-v2"
     
