@@ -18,6 +18,9 @@ RUN export PATH="$PATH:/root/.cargo/bin" && \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz \
         https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.7.0/ru_core_news_sm-3.7.0.tar.gz
 
+# Install llama-cpp-python with Metal support (for macOS/Apple Silicon)
+RUN CMAKE_ARGS="-DLLAMA_METAL=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+
 COPY . .
 
 RUN mkdir -p uploads

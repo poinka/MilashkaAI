@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     
     # Model settings
     YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"
-    GEMMA_MODEL_ID: str = "google/gemma-3-4b-it"
+    GEMMA_MODEL_ID: str = "google/gemma-3-4b-it-qat-q4_0-gguf"
     WHISPER_MODEL_ID: str = "openai/whisper-small"
     EMBEDDING_MODEL_ID: str = "sentence-transformers/all-MiniLM-L6-v2"
     
@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # Voice processing
     MAX_AUDIO_DURATION: int = 60  # Seconds
     SUPPORTED_AUDIO_FORMATS: List[str] = ["audio/webm", "audio/wav", "audio/mp3"]
+    # Add path to GGUF model for llama.cpp
+    LLAMA_GGUF_PATH: str = "/models/gemma-3-4b-it-qat-q4_0.gguf"
 
     class Config:
         env_file = ".env"

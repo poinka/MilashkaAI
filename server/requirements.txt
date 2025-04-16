@@ -10,7 +10,6 @@ websockets
 transformers[torch]
 torch>=2.0.0
 accelerate
-bitsandbytes>=0.41.0
 optimum
 spacy>=3.7.0
 spacy-transformers
