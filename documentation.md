@@ -23,8 +23,6 @@
 * объект (над чем производится действие);
 * результат (что должно произойти после выполнения действия).
 
-Сначала продумай структуру проекта, все файлы и функции, а затем пиши код
-
 Документация:
 https://docs.falkordb.com/
 https://spacy.io/api/
@@ -32,3 +30,7 @@ https://github.com/explosion/spacy-layout
 https://fastapi.tiangolo.com/
 https://huggingface.co/docs/transformers/index
 https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions
+
+Как запускать:
+docker-compose build server
+docker-compose up

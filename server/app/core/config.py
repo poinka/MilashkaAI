@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     MAX_AUDIO_DURATION: int = 60  # Seconds
     SUPPORTED_AUDIO_FORMATS: List[str] = ["audio/webm", "audio/wav", "audio/mp3"]
     # Add path to GGUF model for llama.cpp
-    LLAMA_GGUF_PATH: str = "/models/gemma-3-4b-it-qat-q4_0.gguf"
+    LLAMA_GGUF_PATH: str = "/models/gemma-3-4b-it-q4_0.gguf"
 
     class Config:
         env_file = ".env"

@@ -8,6 +8,7 @@ services:
     volumes:
       - ./server:/app
       - ./uploads:/app/uploads
+      - ./models:/models
     environment:
       - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379

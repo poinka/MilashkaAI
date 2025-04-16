@@ -24,6 +24,7 @@ RUN CMAKE_ARGS="-DLLAMA_METAL=on" FORCE_CMAKE=1 pip install llama-cpp-python --n
 COPY . .
 
 RUN mkdir -p uploads
+RUN mkdir -p /models
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
