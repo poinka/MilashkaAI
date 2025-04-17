@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM --platform=linux/amd64 python:3.10-slim
 
 WORKDIR /app
 
@@ -7,8 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     software-properties-common \
     git \
+    cmake \
+    ninja-build \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip
 
 COPY requirements.txt .
 
@@ -18,13 +22,11 @@ RUN export PATH="$PATH:/root/.cargo/bin" && \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz \
         https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.7.0/ru_core_news_sm-3.7.0.tar.gz
 
-# Install llama-cpp-python with Metal support (for macOS/Apple Silicon)
-RUN CMAKE_ARGS="-DLLAMA_METAL=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+RUN pip install --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python
 
-COPY . .
+COPY app/ app/
 
-RUN mkdir -p uploads
-RUN mkdir -p /models
+RUN mkdir -p uploads /models
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

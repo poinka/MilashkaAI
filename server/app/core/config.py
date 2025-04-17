@@ -1,10 +1,11 @@
-from typing import List
-from pydantic_settings import BaseSettings
+from typing import List, Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Database settings
     FALKORDB_HOST: str = "localhost"
     FALKORDB_PORT: int = 6379
+    FALKORDB_PASSWORD: Optional[str] = None
     
     # Model settings
     YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"
@@ -32,8 +33,10 @@ class Settings(BaseSettings):
     # Add path to GGUF model for llama.cpp
     LLAMA_GGUF_PATH: str = "/models/gemma-3-4b-it-q4_0.gguf"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        env_file_encoding='utf-8',
+        env_prefix='',  # pick up env vars as-is
+    )
 
 settings = Settings()

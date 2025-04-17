@@ -32,5 +32,6 @@ https://huggingface.co/docs/transformers/index
 https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions
 
 Как запускать:
+docker run -it -p 80:80 docker/getting-started
 docker-compose build server
 docker-compose up

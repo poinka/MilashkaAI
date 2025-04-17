@@ -10,7 +10,7 @@ websockets
 transformers[torch]
 torch>=2.0.0
 accelerate
-optimum
+optimum>=1.24.0
 spacy>=3.7.0
 spacy-transformers
 sentence-transformers
