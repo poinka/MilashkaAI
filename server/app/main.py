@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.routers import documents, completion, voice, editing, rag, feedback
-from app.db.falkordb_client import get_db_connection, close_db_connection
+from app.db.kuzudb_client import get_db_connection, close_db_connection  # Updated import
 from app.core.models import load_models, unload_models
 
 @asynccontextmanager
@@ -12,11 +12,11 @@ async def lifespan(app: FastAPI):
     # Startup
     try:
         load_models()
-        get_db_connection()
+        get_db_connection()  # Initialize KuZuDB connection
         yield
     finally:
         # Cleanup
-        close_db_connection()
+        close_db_connection()  # Close KuZuDB connection
         unload_models()
 
 app = FastAPI(

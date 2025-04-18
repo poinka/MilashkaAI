@@ -9,18 +9,8 @@ services:
       - ./server:/app
       - ./uploads:/app/uploads
       - ./models:/models
-    environment:
-      - FALKORDB_HOST=falkordb
-      - FALKORDB_PORT=6379
-    depends_on:
-      - falkordb
-
-  falkordb:
-    image: falkordb/falkordb:v4.8.5-arm64v8
-    ports:
-      - "6379:6379"
-    volumes:
-      - falkordb_data:/data
+      - kuzu_data:/data/kuzu
 
 volumes:
-  falkordb_data:
+  kuzu_data:
+    driver: local

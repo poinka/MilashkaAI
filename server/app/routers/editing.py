@@ -6,7 +6,7 @@ from app.schemas.models import EditRequest, EditResponse
 from app.schemas.errors import ErrorResponse
 from app.core.editing import perform_text_edit
 from app.core.rag_retriever import retrieve_relevant_chunks
-from app.db.falkordb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection
 
 router = APIRouter(
     responses={

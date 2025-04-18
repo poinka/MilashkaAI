@@ -9,7 +9,7 @@ from torch.nn import functional as F
 # Import necessary components
 from app.core.models import get_llm
 from app.core.rag_retriever import retrieve_relevant_chunks
-from app.db.falkordb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection
 from app.core.config import settings
 
 class EditingContext:

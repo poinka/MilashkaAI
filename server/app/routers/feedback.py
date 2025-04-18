@@ -4,7 +4,7 @@ from typing import Optional
 import logging
 from datetime import datetime
 
-from app.db.falkordb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection
 
 router = APIRouter()
 

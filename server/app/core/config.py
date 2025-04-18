@@ -2,10 +2,12 @@ from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    # Server settings
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    
     # Database settings
-    FALKORDB_HOST: str = "localhost"
-    FALKORDB_PORT: int = 6379
-    FALKORDB_PASSWORD: Optional[str] = None
+    KUZUDB_PATH: str = "/data/kuzu"
     
     # Model settings
     YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"

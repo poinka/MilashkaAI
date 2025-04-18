@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     cmake \
     ninja-build \
+    libc++-dev \
+    libc++abi-dev \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y \
     && rm -rf /var/lib/apt/lists/*
 

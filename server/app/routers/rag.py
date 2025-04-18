@@ -5,7 +5,7 @@ import asyncio
 from app.core.config import settings
 from app.core.rag_retriever import retrieve_relevant_chunks
 from app.core.rag_builder import reindex_document
-from app.db.falkordb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection
 
 router = APIRouter()
 

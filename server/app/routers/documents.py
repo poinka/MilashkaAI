@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.schemas.models import DocumentMetadata
 from app.schemas.errors import ErrorResponse
 from app.core.rag_builder import build_rag_graph_from_text 
-from app.db.falkordb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection
 
 router = APIRouter(
     responses={
