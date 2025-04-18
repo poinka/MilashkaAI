@@ -1,20 +1,25 @@
-from kuzu import Database
-from app.core.config import settings
 import logging
+from datetime import datetime
+from kuzu import Database, Connection
+from app.core.models import get_embedding_pipeline
+from app.core.config import settings
 
-kuzu_db: Database | None = None
+# Constants for schema
+DOCUMENT_TABLE = "Document"
+CHUNK_TABLE = "Chunk"
+CONTAINS_RELATIONSHIP = "Contains"
 
-def get_db_connection() -> Database:
-    """Get or create KuzuDB connection."""
-    global kuzu_db
-    if kuzu_db is None:
-        try:
-            kuzu_db = Database(settings.KUZUDB_PATH)
-            logging.info("KuzuDB connection established")
-        except Exception as e:
-            logging.error(f"Error connecting to KuzuDB: {e}")
-            raise
-    return kuzu_db
+def get_db_connection() -> Connection:
+    """Returns a KuzuDB Connection object."""
+    try:
+        # Adjust the path to your database storage location
+        database = Database("/app/data/kuzu_db")  # Example path, update as needed
+        conn = Connection(database)
+        return conn
+    except Exception as e:
+        logging.error(f"Failed to establish KuzuDB connection: {e}")
+        raise
+
 
 def close_db_connection():
     """Close KuzuDB connection."""

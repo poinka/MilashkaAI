@@ -171,28 +171,51 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Document List Handling ---
     async function loadDocumentList() {
         if (!docList) return;
-
+    
         try {
             const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
             
-            if (response.success) {
+            console.log('LIST_DOCUMENTS response:', response); // Debug log
+    
+            if (response === undefined || response === null) {
+                showError('Failed to load documents: No response from background script');
+                console.error('No response received from background script');
+                docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
+                return;
+            }
+    
+            if (response.success && Array.isArray(response.documents)) {
                 renderDocumentList(response.documents);
             } else {
-                showError('Failed to load documents: ' + response.error);
+                const errorMsg = response.error || 
+                    (!response.success ? 'Request failed' : 
+                    'Missing or invalid documents array');
+                showError(`Failed to load documents: ${errorMsg}`);
+                console.error('Invalid response:', response);
+                docList.innerHTML = '<li class="no-documents">Failed to load documents</li>';
             }
         } catch (error) {
             showError('Error loading documents: ' + error.message);
+            console.error('Load documents error:', error);
+            docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
         }
     }
 
     function renderDocumentList(documents) {
+        if (!Array.isArray(documents)) {
+            console.error('Invalid documents data:', documents);
+            docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
+            return;
+        }
+    
         const filteredDocs = filterDocuments(documents);
         docList.innerHTML = '';
-
+    
         if (filteredDocs.length === 0) {
             docList.innerHTML = '<li class="no-documents">No documents found</li>';
             return;
         }
+    
 
         filteredDocs.forEach(doc => {
             const li = document.createElement('li');
@@ -229,12 +252,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function filterDocuments(documents) {
-        const status = statusFilter.value;
-        const search = searchInput.value.toLowerCase();
+        if (!Array.isArray(documents)) return [];
+        
+        const status = statusFilter?.value || 'all';
+        const search = searchInput?.value?.toLowerCase() || '';
         
         return documents.filter(doc => {
+            if (!doc) return false;
             const matchesStatus = status === 'all' || doc.status === status;
-            const matchesSearch = doc.filename.toLowerCase().includes(search);
+            const matchesSearch = doc.filename?.toLowerCase()?.includes(search);
             return matchesStatus && matchesSearch;
         });
     }

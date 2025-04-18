@@ -10,7 +10,14 @@ services:
       - ./uploads:/app/uploads
       - ./models:/models
       - kuzu_data:/data/kuzu
+      - huggingface_cache:/root/.cache/huggingface  # Add this line
+      - torch_cache:/root/.cache/torch  # Add this line
+
 
 volumes:
   kuzu_data:
+    driver: local
+  huggingface_cache:  # Add this volume
+    driver: local
+  torch_cache:  # Add this volume
     driver: local

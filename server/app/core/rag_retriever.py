@@ -1,8 +1,12 @@
 from typing import List, Dict, Any
 import numpy as np
+import logging
 from app.db.kuzudb_client import get_db_connection
 from app.core.models import get_embedding_pipeline
 from app.core.config import settings
+
+# Constant for schema
+CHUNK_TABLE = "Chunk"
 
 async def retrieve_relevant_chunks(
     query_text: str,
@@ -17,19 +21,28 @@ async def retrieve_relevant_chunks(
         # Generate query embedding
         query_vector = embedding_pipeline.encode([query_text])[0]
 
-        # Build query with vector similarity and optional doc filter
-        filter_clause = f"AND c.doc_id = '{filter_doc_id}'" if filter_doc_id else ""
-        
-        query = f"""
-        MATCH (c:{CHUNK_TABLE})
-        WHERE true {filter_clause}
-        WITH c, vector_cosine_similarity(c.embedding, $1) as score
-        ORDER BY score DESC
-        LIMIT {top_k}
-        RETURN c.chunk_id, c.text, c.doc_id, score
-        """
+        # Build parameterized query with optional doc filter
+        if filter_doc_id:
+            query = f"""
+            MATCH (c:{CHUNK_TABLE})
+            WHERE c.doc_id = $1
+            WITH c, vector_cosine_similarity(c.embedding, $2) as score
+            ORDER BY score DESC
+            LIMIT {top_k}
+            RETURN c.chunk_id, c.text, c.doc_id, score
+            """
+            params = [filter_doc_id, query_vector.tolist()]
+        else:
+            query = f"""
+            MATCH (c:{CHUNK_TABLE})
+            WITH c, vector_cosine_similarity(c.embedding, $1) as score
+            ORDER BY score DESC
+            LIMIT {top_k}
+            RETURN c.chunk_id, c.text, c.doc_id, score
+            """
+            params = [query_vector.tolist()]
 
-        results = db.query(query, [query_vector.tolist()])
+        results = db.query(query, params)
         
         return [{
             "text": row[1],

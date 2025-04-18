@@ -98,15 +98,25 @@ class BackgroundService {
             TRACK_SUGGESTION: () => this.handleTrackSuggestion(request),
             FORMAT_TRANSCRIPTION: () => this.handleFormatTranscription(request)
         };
-
+    
         const handler = handlers[request.type];
         if (!handler) {
+            console.error(`Unknown request type: ${request.type}`);
             sendResponse({ success: false, error: "Unknown request type" });
             return;
         }
-
+    
         try {
-            const result = await this.taskQueue.add(() => handler());
+            let result;
+            if (request.type === "LIST_DOCUMENTS") {
+                // Bypass TaskQueue for LIST_DOCUMENTS to isolate issue
+                console.log(`Executing ${request.type} directly`);
+                result = await handler();
+            } else {
+                console.log(`Queueing ${request.type} in TaskQueue`);
+                result = await this.taskQueue.add(() => handler());
+            }
+            console.log(`Result for ${request.type}:`, result);
             sendResponse({ success: true, ...result });
         } catch (error) {
             console.error(`Error handling ${request.type}:`, error);
@@ -174,10 +184,19 @@ class BackgroundService {
     }
 
     async handleListDocuments() {
-        const response = await this.fetchAPI('/documents/', {
-            method: 'GET'
-        });
-        return { documents: response };
+        console.log('Fetching document list from API'); // Debug log
+        try {
+            const response = await this.fetchAPI('/documents/', {
+                method: 'GET'
+            });
+            console.log('Server response for documents:', response); // Debug log
+            // Ensure response is an array
+            const documents = Array.isArray(response) ? response : [];
+            return { documents };
+        } catch (error) {
+            console.error('Failed to fetch documents:', error);
+            return { documents: [], error: error.message };
+        }
     }
 
     async handleDeleteDocument(request) {
@@ -235,7 +254,7 @@ class BackgroundService {
     async fetchAPI(endpoint, options = {}) {
         const apiUrl = await this.getApiUrl();
         const url = `${apiUrl}${endpoint}`;
-        
+        console.log(`Fetching from ${url}`);
         const response = await fetch(url, {
             ...options,
             headers: {
@@ -243,15 +262,17 @@ class BackgroundService {
                 'X-Client-Version': chrome.runtime.getManifest().version
             }
         });
-
+        console.log(`Response status: ${response.status} ${response.statusText}`);
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: response.statusText }));
+            console.error(`Fetch error: ${error.detail || 'API request failed'}`);
             throw new Error(error.detail || 'API request failed');
         }
-
-        return response.json();
+        const json = await response.json();
+        console.log(`Parsed JSON response:`, json);
+        return json;
     }
-
+    
     async getApiUrl() {
         return new Promise((resolve) => {
             chrome.storage.sync.get(['apiUrl'], (result) => {

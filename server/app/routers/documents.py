@@ -70,9 +70,11 @@ async def upload_document(
         metadata = DocumentMetadata(
             doc_id=doc_id,
             filename=file.filename,
+            processed_at=now,
             status="processing",
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            error=None
         )
 
         # Add document processing to background tasks
@@ -101,42 +103,42 @@ async def upload_document(
 @router.get("/", 
     response_model=List[DocumentMetadata],
     summary="List all uploaded documents")
-async def list_documents():
+
+def list_documents():
+    """List all documents stored in the Document table."""
     try:
-        db = get_db_connection()
-        graph_name = "doc_metadata"  # Graph for document metadata
-        graph = db.select_graph(graph_name)
+        conn: Connection = get_db_connection()
         
-        # Query documents from the metadata graph
-        result = graph.query("""
-            MATCH (d:Document)
-            RETURN d.doc_id AS doc_id,
-                   d.filename AS filename,
-                   d.status AS status,
-                   d.created_at AS created_at,
-                   d.updated_at AS updated_at,
-                   d.error AS error
-            ORDER BY d.created_at DESC
+        # Ensure Document table exists
+        conn.execute(f"""
+            CREATE NODE TABLE IF NOT EXISTS Document (
+                doc_id STRING,
+                filename STRING,
+                processed_at STRING,
+                status STRING,
+                created_at STRING,
+                updated_at STRING,
+                PRIMARY KEY (doc_id)
+            )
         """)
         
+        # Query documents
+        result = conn.execute(f"""
+            MATCH (d:Document)
+            RETURN d.doc_id, d.filename, d.processed_at, d.status, d.created_at, d.updated_at
+        """)
         documents = []
-        for record in result.result_set:
-            try:
-                created_at = datetime.fromisoformat(record[3]) if record[3] else datetime.utcnow()
-                updated_at = datetime.fromisoformat(record[4]) if record[4] else datetime.utcnow()
-                
-                doc = DocumentMetadata(
-                    doc_id=record[0],
-                    filename=record[1],
-                    status=record[2],
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    error=record[5]
-                )
-                documents.append(doc)
-            except Exception as e:
-                logging.error(f"Error parsing document record: {e}")
-        
+        while result.has_next():
+            row = result.get_next()
+            documents.append({
+                "doc_id": row[0],
+                "filename": row[1],
+                "processed_at": row[2],
+                "status": row[3] if row[3] is not None else "indexed",
+                "created_at": row[4] if row[4] is not None else datetime.now().isoformat(),
+                "updated_at": row[5] if row[5] is not None else datetime.now().isoformat(),
+                'error': None
+            })
         return documents
     except Exception as e:
         logging.error(f"Error listing documents: {e}")
@@ -146,40 +148,30 @@ async def list_documents():
     response_model=DocumentMetadata,
     summary="Get document status")
 async def get_document_status(doc_id: str):
-    db = get_db_connection()
-    
+    """Retrieve metadata for a specific document."""
     try:
-        # Get document from the metadata graph
-        graph_name = "doc_metadata"
-        graph = db.select_graph(graph_name)
+        conn = get_db_connection()
         
-        result = graph.query("""
-            MATCH (d:Document {doc_id: $doc_id})
-            RETURN d.doc_id AS doc_id,
-                   d.filename AS filename,
-                   d.status AS status,
-                   d.created_at AS created_at,
-                   d.updated_at AS updated_at,
-                   d.error AS error
-        """, params={"doc_id": doc_id})
+        result = conn.execute(f"""
+            MATCH (d:Document {{doc_id: $doc_id}})
+            RETURN d.doc_id, d.filename, d.processed_at, d.status, d.created_at, d.updated_at
+        """, {"doc_id": doc_id})
         
-        if not result.result_set:
+        if not result.has_next():
             raise HTTPException(
                 status_code=404,
                 detail="Document not found"
             )
             
-        record = result.result_set[0]
-        created_at = datetime.fromisoformat(record[3]) if record[3] else datetime.utcnow()
-        updated_at = datetime.fromisoformat(record[4]) if record[4] else datetime.utcnow()
-        
+        record = result.get_next()
         document = DocumentMetadata(
             doc_id=record[0],
             filename=record[1],
-            status=record[2],
-            created_at=created_at,
-            updated_at=updated_at,
-            error=record[5]
+            processed_at=datetime.fromisoformat(record[2]) if record[2] else datetime.utcnow(),
+            status=record[3] if record[3] is not None else "indexed",
+            created_at=datetime.fromisoformat(record[4]) if record[4] else datetime.utcnow(),
+            updated_at=datetime.fromisoformat(record[5]) if record[5] else datetime.utcnow(),
+            error=None
         )
         
         return document
@@ -196,36 +188,18 @@ async def get_document_status(doc_id: str):
     response_model=DocumentMetadata,
     summary="Delete a document")
 async def delete_document(doc_id: str):
-    db = get_db_connection()
-    
+    """Delete a document and its associated chunks."""
     try:
-        # First get the document to return its data
+        conn = get_db_connection()
+        
         document = await get_document_status(doc_id)
         
-        # Delete from the document-specific graph
-        doc_graph_name = f"doc_{doc_id}"
-        try:
-            db.delete_graph(doc_graph_name)
-        except Exception as e:
-            logging.warning(f"Error deleting document graph {doc_graph_name}: {e}")
+        conn.execute(f"""
+            MATCH (d:Document {{doc_id: $doc_id}})
+            OPTIONAL MATCH (d)-[:Contains]->(c:Chunk)
+            DETACH DELETE d, c
+        """, {"doc_id": doc_id})
         
-        # Delete from the metadata graph
-        meta_graph = db.select_graph("doc_metadata")
-        meta_graph.query("""
-            MATCH (d:Document {doc_id: $doc_id})
-            DETACH DELETE d
-        """, params={"doc_id": doc_id})
-        
-        # Clean up from global index - delete vectors related to this document
-        try:
-            db.execute_command(
-                f"FT.SEARCH milashka_chunk_embedding_idx '@doc_id:{{{doc_id}}}'",
-                "LIMIT", "0", "NOCONTENT"
-            )
-        except Exception as e:
-            logging.warning(f"Error cleaning up document vectors: {e}")
-        
-        # Try to delete the original file if it exists
         try:
             file_paths = os.listdir("uploads")
             for file_path in file_paths:
