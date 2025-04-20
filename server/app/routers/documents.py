@@ -13,6 +13,10 @@ from app.schemas.errors import ErrorResponse
 from app.core.rag_builder import build_rag_graph_from_text 
 from app.db.kuzudb_client import get_db_connection
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     responses={
         400: {"model": ErrorResponse},
@@ -22,16 +26,11 @@ router = APIRouter(
 )
 
 async def save_upload_file(file: UploadFile) -> str:
-    """Save uploaded file and return the saved path"""
-    # Create uploads directory if it doesn't exist
     os.makedirs("uploads", exist_ok=True)
-    
-    # Generate unique filename
     ext = os.path.splitext(file.filename)[1]
     unique_filename = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join("uploads", unique_filename)
     
-    # Save file
     async with aiofiles.open(file_path, 'wb') as out_file:
         content = await file.read()
         await out_file.write(content)
@@ -45,14 +44,12 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    # Validate file size
     if file.size and file.size > settings.MAX_DOCUMENT_SIZE:
         raise HTTPException(
             status_code=400,
             detail=f"File size exceeds maximum limit of {settings.MAX_DOCUMENT_SIZE / 1024 / 1024}MB"
         )
     
-    # Validate file type
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in settings.SUPPORTED_FORMATS:
         raise HTTPException(
@@ -61,10 +58,7 @@ async def upload_document(
         )
 
     try:
-        # Save file
         file_path = await save_upload_file(file)
-        
-        # Create document metadata
         doc_id = str(uuid.uuid4())
         now = datetime.utcnow()
         metadata = DocumentMetadata(
@@ -77,7 +71,6 @@ async def upload_document(
             error=None
         )
 
-        # Add document processing to background tasks
         background_tasks.add_task(
             build_rag_graph_from_text, 
             doc_id=doc_id, 
@@ -88,7 +81,6 @@ async def upload_document(
         return metadata
 
     except Exception as e:
-        # Clean up file if saved
         if 'file_path' in locals():
             try:
                 os.remove(file_path)
@@ -101,16 +93,17 @@ async def upload_document(
         )
 
 @router.get("/", 
-    response_model=List[DocumentMetadata],
+    response_model=dict,
     summary="List all uploaded documents")
-
 def list_documents():
-    """List all documents stored in the Document table."""
+    logger.info("Handling GET /api/v1/documents/ request")
     try:
-        conn: Connection = get_db_connection()
+        logger.debug("Attempting to get database connection")
+        conn = get_db_connection()
+        logger.debug("Database connection established successfully")
         
-        # Ensure Document table exists
-        conn.execute(f"""
+        logger.debug("Ensuring Document table exists")
+        conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS Document (
                 doc_id STRING,
                 filename STRING,
@@ -121,15 +114,17 @@ def list_documents():
                 PRIMARY KEY (doc_id)
             )
         """)
+        logger.debug("Document table ensured")
         
-        # Query documents
-        result = conn.execute(f"""
+        logger.debug("Executing query to fetch documents")
+        result = conn.execute("""
             MATCH (d:Document)
             RETURN d.doc_id, d.filename, d.processed_at, d.status, d.created_at, d.updated_at
         """)
         documents = []
         while result.has_next():
             row = result.get_next()
+            logger.debug(f"Fetched document row: {row}")
             documents.append({
                 "doc_id": row[0],
                 "filename": row[1],
@@ -137,23 +132,26 @@ def list_documents():
                 "status": row[3] if row[3] is not None else "indexed",
                 "created_at": row[4] if row[4] is not None else datetime.now().isoformat(),
                 "updated_at": row[5] if row[5] is not None else datetime.now().isoformat(),
-                'error': None
+                "error": None
             })
-        return documents
+        logger.info(f"Successfully fetched {len(documents)} documents")
+        return {"documents": documents}
     except Exception as e:
-        logging.error(f"Error listing documents: {e}")
-        return []
+        logger.error(f"Error listing documents: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list documents: {str(e)}"
+        )
 
 @router.get("/{doc_id}", 
     response_model=DocumentMetadata,
     summary="Get document status")
 async def get_document_status(doc_id: str):
-    """Retrieve metadata for a specific document."""
     try:
         conn = get_db_connection()
         
-        result = conn.execute(f"""
-            MATCH (d:Document {{doc_id: $doc_id}})
+        result = conn.execute("""
+            MATCH (d:Document {doc_id: $doc_id})
             RETURN d.doc_id, d.filename, d.processed_at, d.status, d.created_at, d.updated_at
         """, {"doc_id": doc_id})
         
@@ -170,7 +168,7 @@ async def get_document_status(doc_id: str):
             processed_at=datetime.fromisoformat(record[2]) if record[2] else datetime.utcnow(),
             status=record[3] if record[3] is not None else "indexed",
             created_at=datetime.fromisoformat(record[4]) if record[4] else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(record[5]) if record[5] else datetime.utcnow(),
+            updated_at=datetime.fromisoformat(record[5]) if record[5] is not None else datetime.utcnow(),
             error=None
         )
         
@@ -178,7 +176,7 @@ async def get_document_status(doc_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Error retrieving document {doc_id}: {e}")
+        logger.error(f"Error retrieving document {doc_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error retrieving document: {str(e)}"
@@ -188,14 +186,13 @@ async def get_document_status(doc_id: str):
     response_model=DocumentMetadata,
     summary="Delete a document")
 async def delete_document(doc_id: str):
-    """Delete a document and its associated chunks."""
     try:
         conn = get_db_connection()
         
         document = await get_document_status(doc_id)
         
-        conn.execute(f"""
-            MATCH (d:Document {{doc_id: $doc_id}})
+        conn.execute("""
+            MATCH (d:Document {doc_id: $doc_id})
             OPTIONAL MATCH (d)-[:Contains]->(c:Chunk)
             DETACH DELETE d, c
         """, {"doc_id": doc_id})
@@ -207,14 +204,14 @@ async def delete_document(doc_id: str):
                     os.remove(os.path.join("uploads", file_path))
                     break
         except Exception as e:
-            logging.warning(f"Error deleting document file: {e}")
+            logger.warning(f"Error deleting document file: {e}")
         
         return document
         
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Error deleting document {doc_id}: {e}")
+        logger.error(f"Error deleting document {doc_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error deleting document: {str(e)}"

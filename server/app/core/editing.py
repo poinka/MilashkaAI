@@ -1,12 +1,7 @@
-# server/app/core/editing.py
 import logging
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 import asyncio
-import torch
-from torch.nn import functional as F
-
-# Import necessary components
 from app.core.models import get_llm
 from app.core.rag_retriever import retrieve_relevant_chunks
 from app.db.kuzudb_client import get_db_connection
@@ -37,10 +32,6 @@ async def evaluate_edit_quality(
     prompt: str,
     language: str
 ) -> float:
-    """
-    Evaluates the quality of the edit using the model.
-    Returns a confidence score between 0 and 1.
-    """
     eval_prompt = f"""<start_of_turn>user
 Rate how well this edit matches the requested changes in {language}.
 Original text: "{original}"
@@ -81,8 +72,8 @@ Output only the number.<end_of_turn>
             score = float(score_text.strip())
             return max(0.0, min(100.0, score)) / 100.0
         except ValueError:
-            logging.warning(f"Could not parse score from model output: {score_text}")
-            return 0.5  # Default middle score
+            logging.warning(f"Could not parse score: {score_text}")
+            return 0.5
     except Exception as e:
         logging.error(f"Error evaluating edit quality: {e}")
         return 0.5
@@ -95,9 +86,6 @@ async def generate_alternative_edits(
     language: str,
     num_alternatives: int = 3
 ) -> list[str]:
-    """
-    Generates multiple alternative edits for the same text and prompt.
-    """
     alternatives = []
     base_prompt = f"""<start_of_turn>user
 Edit the following text in {language} based on this request: "{prompt}"
@@ -119,7 +107,7 @@ Edited Text: """
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=settings.MAX_NEW_TOKENS,
-                temperature=0.8,  # Higher temperature for variety
+                temperature=0.8,
                 top_p=0.9,
                 do_sample=True,
                 num_return_sequences=1,
@@ -148,26 +136,39 @@ async def perform_text_edit(
     context_window: int = 1000,
     min_confidence: float = 0.7
 ) -> Dict[str, Any]:
-    """
-    Edits the selected text based on the user's prompt using Gemma.
-    Includes confidence scoring and alternative suggestions.
-    """
     logging.info(f"Editing text (language: {language}, prompt: {prompt})")
     model, tokenizer = get_llm()
     edit_context = EditingContext(selected_text, prompt, language)
 
     try:
-        # Get RAG context if needed
+        # Ensure Chunk table exists
         db = get_db_connection()
-        rag_results = await retrieve_relevant_chunks(
-            selected_text,
-            top_k=3,
-            db=db,
-            use_cache=True
-        )
+        db.execute("""
+            CREATE NODE TABLE IF NOT EXISTS Chunk (
+                chunk_id STRING,
+                doc_id STRING,
+                text STRING,
+                embedding VECTOR[FLOAT, 768],
+                created_at STRING,
+                PRIMARY KEY (chunk_id)
+            )
+        """)
+
+        # Get RAG context
+        doc_count = db.execute("MATCH (d:Document) RETURN count(*)").get_next()[0]
+        rag_results = []
+        if doc_count > 0:
+            rag_results = await retrieve_relevant_chunks(
+                selected_text,
+                top_k=3,
+                db=db,
+                use_cache=True
+            )
+        else:
+            logging.info("No documents found for RAG context.")
         rag_context = "\n".join([chunk["text"] for chunk in rag_results])
 
-        # Construct a detailed prompt with context
+        # Construct prompt
         edit_prompt = f"""<start_of_turn>user
 Edit the following text in {language} based on this request: "{prompt}"
 
@@ -184,7 +185,7 @@ Text to edit: "{selected_text}"<end_of_turn>
 <start_of_turn>model
 Edited Text: """
 
-        # Generate primary edit with timeout
+        # Generate primary edit
         async def generate_with_timeout():
             inputs = tokenizer(
                 edit_prompt,
@@ -198,7 +199,7 @@ Edited Text: """
                     model.generate,
                     **inputs,
                     max_new_tokens=settings.MAX_NEW_TOKENS,
-                    temperature=0.3,  # Lower temperature for primary edit
+                    temperature=0.3,
                     do_sample=False,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id
@@ -208,7 +209,7 @@ Edited Text: """
 
         outputs = await generate_with_timeout()
         edited_text = tokenizer.decode(
-            outputs[0, len(edit_prompt):],
+            outputs[0, inputs.input_ids.shape[1]:],
             skip_special_tokens=True
         )
         edited_text = edited_text.strip().replace('"', '')
@@ -224,7 +225,7 @@ Edited Text: """
         )
         edit_context.add_edit(selected_text, edited_text, confidence)
 
-        # If confidence is low, generate alternatives
+        # Generate alternatives if needed
         alternatives = []
         if confidence < min_confidence:
             alternatives = await generate_alternative_edits(
@@ -249,13 +250,7 @@ Edited Text: """
 
     except asyncio.TimeoutError:
         logging.error("Edit generation timed out")
-        raise HTTPException(
-            status_code=408,
-            detail="Edit generation timed out"
-        )
+        raise HTTPException(status_code=408, detail="Edit generation timed out")
     except Exception as e:
-        logging.error(f"Error during text editing: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to edit text: {str(e)}"
-        )
+        logging.error(f"Error during text editing: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to edit text: {str(e)}")

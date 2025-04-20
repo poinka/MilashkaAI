@@ -1,9 +1,8 @@
-// Background service worker with task queue and error recovery
 class TaskQueue {
     constructor() {
         this.queue = [];
         this.isProcessing = false;
-        this.retryDelays = [1000, 3000, 5000]; // Retry delays in ms
+        this.retryDelays = [1000, 3000, 5000];
     }
 
     async add(task) {
@@ -21,16 +20,14 @@ class TaskQueue {
 
         try {
             await this.executeWithRetry(task);
-            this.queue.shift(); // Remove completed task
+            this.queue.shift();
         } catch (error) {
             console.error(`Task failed after all retries:`, error);
-            // Move failed task to the end or remove it
             this.queue.shift();
-            // Could add to a failed tasks list for later recovery
         } finally {
             this.isProcessing = false;
             if (this.queue.length > 0) {
-                await this.process(); // Process next task
+                await this.process();
             }
         }
     }
@@ -45,7 +42,7 @@ class TaskQueue {
                 );
                 return this.executeWithRetry(task, attempt + 1);
             }
-            throw error; // No more retries
+            throw error;
         }
     }
 }
@@ -60,8 +57,21 @@ class BackgroundService {
 
     setupAPI() {
         chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-            // Return true to indicate async response
-            this.handleMessage(request, sender, sendResponse);
+            console.log('Received message:', request);
+            if (request.type === "LIST_DOCUMENTS") {
+                console.log('Directly handling LIST_DOCUMENTS');
+                this.handleListDocuments()
+                    .then(result => {
+                        console.log('Sending LIST_DOCUMENTS response:', result);
+                        sendResponse(result);
+                    })
+                    .catch(error => {
+                        console.error('LIST_DOCUMENTS error:', error);
+                        sendResponse({ success: false, error: error.message });
+                    });
+            } else {
+                this.handleMessage(request, sender, sendResponse);
+            }
             return true;
         });
     }
@@ -91,40 +101,41 @@ class BackgroundService {
             UPLOAD_DOCUMENT: () => this.handleUpload(request),
             TRANSCRIBE_AUDIO: () => this.handleTranscription(request),
             EDIT_TEXT: () => this.handleEdit(request),
-            LIST_DOCUMENTS: () => this.handleListDocuments(),
             DELETE_DOCUMENT: () => this.handleDeleteDocument(request),
             START_VOICE_INPUT: () => this.handleStartVoice(sender.tab?.id),
             STOP_VOICE_INPUT: () => this.handleStopVoice(sender.tab?.id),
             TRACK_SUGGESTION: () => this.handleTrackSuggestion(request),
             FORMAT_TRANSCRIPTION: () => this.handleFormatTranscription(request)
         };
-    
+
         const handler = handlers[request.type];
         if (!handler) {
             console.error(`Unknown request type: ${request.type}`);
             sendResponse({ success: false, error: "Unknown request type" });
             return;
         }
-    
+
         try {
-            let result;
-            if (request.type === "LIST_DOCUMENTS") {
-                // Bypass TaskQueue for LIST_DOCUMENTS to isolate issue
-                console.log(`Executing ${request.type} directly`);
-                result = await handler();
-            } else {
-                console.log(`Queueing ${request.type} in TaskQueue`);
-                result = await this.taskQueue.add(() => handler());
-            }
+            console.log(`Processing ${request.type}`);
+            const result = await this.taskQueue.add(() => handler());
             console.log(`Result for ${request.type}:`, result);
             sendResponse({ success: true, ...result });
         } catch (error) {
             console.error(`Error handling ${request.type}:`, error);
-            sendResponse({
-                success: false,
-                error: error.message || "Operation failed"
-            });
+            sendResponse({ success: false, error: error.message || "Operation failed" });
         }
+    }
+
+    async handleFormatTranscription(request) {
+        const response = await this.fetchAPI('/voice/format', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: request.text,
+                language: request.language || 'ru'
+            })
+        });
+        return { formatted_text: response.text };
     }
 
     async handleCompletion(request) {
@@ -184,18 +195,37 @@ class BackgroundService {
     }
 
     async handleListDocuments() {
-        console.log('Fetching document list from API'); // Debug log
+        console.log('Fetching document list from API');
         try {
             const response = await this.fetchAPI('/documents/', {
                 method: 'GET'
             });
-            console.log('Server response for documents:', response); // Debug log
-            // Ensure response is an array
-            const documents = Array.isArray(response) ? response : [];
-            return { documents };
+            console.log('Raw server response:', response);
+            
+            if (!response) {
+                throw new Error('Empty response from server');
+            }
+            
+            let documents = [];
+            if (response.documents && Array.isArray(response.documents)) {
+                documents = response.documents;
+            } else {
+                throw new Error('Invalid response format: expected { documents: [...] }');
+            }
+            
+            console.log('Processed documents:', documents);
+            
+            return {
+                success: true,
+                documents: documents
+            };
         } catch (error) {
             console.error('Failed to fetch documents:', error);
-            return { documents: [], error: error.message };
+            return {
+                success: false,
+                documents: [],
+                error: error.message
+            };
         }
     }
 
@@ -235,7 +265,7 @@ class BackgroundService {
             }
         };
 
-        connection.recorder.start(1000); // Capture in 1-second chunks
+        connection.recorder.start(1000);
         return { success: true };
     }
 
@@ -252,36 +282,47 @@ class BackgroundService {
     }
 
     async fetchAPI(endpoint, options = {}) {
-        const apiUrl = await this.getApiUrl();
-        const url = `${apiUrl}${endpoint}`;
-        console.log(`Fetching from ${url}`);
-        const response = await fetch(url, {
-            ...options,
-            headers: {
-                ...options.headers,
-                'X-Client-Version': chrome.runtime.getManifest().version
+        try {
+            const apiUrl = await this.getApiUrl();
+            const url = `${apiUrl}${endpoint}`;
+            console.log(`Fetching from ${url}`);
+            
+            const response = await fetch(url, {
+                ...options,
+                headers: {
+                    ...options.headers,
+                    'X-Client-Version': chrome.runtime.getManifest().version
+                }
+            });
+            
+            console.log(`Response status: ${response.status} ${response.statusText}`);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({ 
+                    detail: `HTTP error! status: ${response.status}` 
+                }));
+                console.error(`Fetch error: ${error.detail || 'API request failed'}`);
+                throw new Error(error.detail || 'API request failed');
             }
-        });
-        console.log(`Response status: ${response.status} ${response.statusText}`);
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: response.statusText }));
-            console.error(`Fetch error: ${error.detail || 'API request failed'}`);
-            throw new Error(error.detail || 'API request failed');
+            
+            const json = await response.json();
+            console.log(`API Response:`, json);
+            return json;
+        } catch (error) {
+            console.error(`API Error:`, error);
+            throw new Error(`Failed to fetch: ${error.message}`);
         }
-        const json = await response.json();
-        console.log(`Parsed JSON response:`, json);
-        return json;
     }
     
     async getApiUrl() {
         return new Promise((resolve) => {
             chrome.storage.sync.get(['apiUrl'], (result) => {
-                resolve(result.apiUrl || 'http://localhost:8000/api/v1');
+                const url = result.apiUrl || 'http://localhost:8000/api/v1';
+                console.log('Resolved API URL:', url);
+                resolve(url);
             });
         });
     }
 }
 
-// Initialize the background service
 const backgroundService = new BackgroundService();
 console.log("MilashkaAI background service initialized.");

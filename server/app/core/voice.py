@@ -1,20 +1,17 @@
-# server/app/core/voice.py
 import logging
 from typing import Dict, Any, AsyncGenerator
-from pathlib import Path
 import io
 import numpy as np
 import soundfile as sf
 from fastapi import HTTPException, UploadFile
 import asyncio
 import torch
-
 from app.core.models import get_asr_pipeline, get_llm
 from app.core.config import settings
 
 class AudioProcessor:
     def __init__(self):
-        self.sample_rate = 16000  # Standard for Whisper
+        self.sample_rate = 16000
         self.supported_formats = settings.SUPPORTED_AUDIO_FORMATS
         self.max_duration = settings.MAX_AUDIO_DURATION
 
@@ -25,9 +22,8 @@ class AudioProcessor:
                 detail=f"Unsupported audio format. Supported: {', '.join(self.supported_formats)}"
             )
 
-        # Read first chunk to validate format
         first_chunk = await file.read(8192)
-        await file.seek(0)  # Reset position
+        await file.seek(0)
 
         try:
             with io.BytesIO(first_chunk) as buf:
@@ -39,55 +35,39 @@ class AudioProcessor:
                             detail=f"Audio duration exceeds limit of {self.max_duration} seconds"
                         )
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid audio file: {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid audio file: {str(e)}")
 
     async def process_audio(self, file: UploadFile) -> np.ndarray:
         await self.validate_audio(file)
         
-        # Read and convert audio to the correct format for Whisper
         audio_bytes = await file.read()
         try:
             with io.BytesIO(audio_bytes) as buf:
                 data, samplerate = sf.read(buf)
                 if samplerate != self.sample_rate:
-                    # Resample if necessary
                     import resampy
                     data = resampy.resample(data, samplerate, self.sample_rate)
                 if len(data.shape) > 1:
-                    data = data.mean(axis=1)  # Convert stereo to mono
+                    data = data.mean(axis=1)
                 return data
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Error processing audio: {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=f"Error processing audio: {str(e)}")
 
-async def transcribe_audio(audio_bytes: bytes, language: str) -> str:
-    """
-    Transcribes audio bytes using the loaded Whisper model.
-    """
+async def transcribe_audio(audio_file: UploadFile, language: str) -> str:
     logging.info(f"Transcribing audio (language: {language})...")
     asr_pipeline = get_asr_pipeline()
     audio_processor = AudioProcessor()
 
     try:
-        # Process audio file
-        audio_data = await audio_processor.process_audio(audio_bytes)
-
-        # Map language codes
+        audio_data = await audio_processor.process_audio(audio_file)
         lang_map = {'ru': 'russian', 'en': 'english'}
         whisper_lang = lang_map.get(language.lower(), language)
         generate_kwargs = {"language": whisper_lang, "task": "transcribe"}
 
-        # Set up device and data type
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if device == "cuda":
             audio_data = torch.tensor(audio_data).cuda()
 
-        # Transcribe with timeout
         async def transcribe_with_timeout():
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -101,67 +81,50 @@ async def transcribe_audio(audio_bytes: bytes, language: str) -> str:
 
         result = await transcribe_with_timeout()
         transcription = result["text"].strip()
-
         logging.info(f"Transcription result: '{transcription[:100]}...'")
         return transcription
 
     except asyncio.TimeoutError:
         logging.error("Transcription timed out")
-        raise HTTPException(
-            status_code=408,
-            detail="Transcription timed out"
-        )
+        raise HTTPException(status_code=408, detail="Transcription timed out")
     except Exception as e:
-        logging.error(f"Error during transcription: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Transcription failed: {str(e)}"
-        )
+        logging.error(f"Error during transcription: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 async def stream_transcription(audio_stream: AsyncGenerator[bytes, None], language: str):
-    """
-    Streams transcription results as they become available.
-    """
     buffer = io.BytesIO()
     audio_processor = AudioProcessor()
-    chunk_duration = 0
 
     async for chunk in audio_stream:
         buffer.write(chunk)
         
-        # Process complete chunks
         if buffer.tell() >= settings.CHUNK_SIZE:
             buffer_data = buffer.getvalue()
             try:
-                # Process chunk
-                transcription = await transcribe_audio(buffer_data, language)
-                yield {"text": transcription, "is_final": False}
+                with io.BytesIO(buffer_data) as temp_file:
+                    transcription = await transcribe_audio(UploadFile(file=temp_file, filename="chunk"), language)
+                    yield {"text": transcription, "is_final": False}
             except Exception as e:
                 logging.error(f"Error processing chunk: {e}")
                 yield {"error": str(e), "is_final": False}
             
-            # Reset buffer
             buffer.seek(0)
             buffer.truncate()
 
-    # Process any remaining audio
     if buffer.tell() > 0:
         try:
-            transcription = await transcribe_audio(buffer.getvalue(), language)
-            yield {"text": transcription, "is_final": True}
+            with io.BytesIO(buffer.getvalue()) as temp_file:
+                transcription = await transcribe_audio(UploadFile(file=temp_file, filename="final"), language)
+                yield {"text": transcription, "is_final": True}
         except Exception as e:
             logging.error(f"Error processing final chunk: {e}")
             yield {"error": str(e), "is_final": True}
 
 async def format_transcription(raw_transcription: str, language: str) -> str:
-    """
-    Formats the raw transcription using Gemma with improved error handling.
-    """
     logging.info(f"Formatting transcription (language: {language})...")
     model, tokenizer = get_llm()
 
     try:
-        # Construct prompt with clear formatting instructions
         prompt = f"""<start_of_turn>user
 Format the following transcribed text in {language}. Apply these improvements:
 1. Fix punctuation and capitalization
@@ -180,7 +143,6 @@ Formatted Text: """
             max_length=settings.MAX_INPUT_LENGTH
         ).to(model.device)
 
-        # Generate with timeout
         async def generate_with_timeout():
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -188,7 +150,7 @@ Formatted Text: """
                     **inputs,
                     max_new_tokens=settings.MAX_NEW_TOKENS,
                     temperature=0.3,
-                    do_sample=False,  # Deterministic for formatting
+                    do_sample=False,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id
                 ),
@@ -198,8 +160,6 @@ Formatted Text: """
         outputs = await generate_with_timeout()
         generated_ids = outputs[0, inputs.input_ids.shape[1]:]
         formatted_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-
-        # Clean up the formatted text
         formatted_text = formatted_text.strip().replace('"', '')
         if formatted_text.lower().startswith("formatted text:"):
             formatted_text = formatted_text[len("formatted text:"):].strip()
@@ -209,15 +169,12 @@ Formatted Text: """
 
     except asyncio.TimeoutError:
         logging.error("Formatting timed out")
-        return raw_transcription  # Fallback to raw text
+        return raw_transcription
     except Exception as e:
-        logging.error(f"Error during formatting: {e}", exc_info=True)
-        return raw_transcription  # Fallback to raw text
+        logging.error(f"Error during formatting: {e}")
+        return raw_transcription
 
 async def extract_requirements(transcription: str, language: str) -> Dict[str, Any]:
-    """
-    Extracts structured requirements with improved validation and error handling.
-    """
     logging.info(f"Extracting requirements (language: {language})...")
     model, tokenizer = get_llm()
 
@@ -265,7 +222,6 @@ Actor: """
         generated_ids = outputs[0, inputs.input_ids.shape[1]:]
         structured_output = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-        # Parse and validate the structured output
         requirements = {
             "actor": "Not specified",
             "action": "Not specified",
@@ -273,25 +229,19 @@ Actor: """
             "result": "Not specified"
         }
 
-        # Parse line by line with validation
         current_field = None
         for line in structured_output.split('\n'):
             line = line.strip()
             if not line:
                 continue
-
             if ':' in line:
                 field, value = line.split(':', 1)
                 field = field.strip().lower()
                 value = value.strip()
-
                 if field in requirements and value and value.lower() not in ['none', 'not specified', 'blank', '']:
                     requirements[field] = value
-
-        # Validate structure
         for key, value in requirements.items():
             if value != "Not specified":
-                # Ensure proper capitalization
                 requirements[key] = value[0].upper() + value[1:]
 
         logging.info(f"Extracted requirements: {requirements}")
@@ -301,5 +251,5 @@ Actor: """
         logging.error("Requirements extraction timed out")
         return {k: "Extraction timed out" for k in ["actor", "action", "object", "result"]}
     except Exception as e:
-        logging.error(f"Error extracting requirements: {e}", exc_info=True)
+        logging.error(f"Error extracting requirements: {e}")
         return {k: "Error during extraction" for k in ["actor", "action", "object", "result"]}
