@@ -26,10 +26,13 @@ router = APIRouter(
 )
 
 async def save_upload_file(file: UploadFile, id: str) -> str:
-    os.makedirs("uploads", exist_ok=True)
+    # Use the consistent path from settings
+    uploads_path = settings.UPLOADS_PATH
+    os.makedirs(uploads_path, exist_ok=True)
+    
     ext = os.path.splitext(file.filename)[1]
     unique_filename = f"{id}{ext}"
-    file_path = os.path.join("uploads", unique_filename)
+    file_path = os.path.join(uploads_path, unique_filename)
     
     async with aiofiles.open(file_path, 'wb') as out_file:
         content = await file.read()
@@ -200,14 +203,15 @@ async def delete_document(doc_id: str):
         
         # Attempt to delete the associated file from the uploads directory
         try:
-            logger.debug("Listing files in 'uploads' directory")
-            file_paths = os.listdir("uploads")
-            logger.debug(f"Files in 'uploads': {file_paths}")
+            logger.debug(f"Deleting file for document {doc_id}")
+            # Use the consistent path from settings
+            uploads_path = settings.UPLOADS_PATH
+            file_paths = os.listdir(uploads_path)
             
             for file_path in file_paths:
                 if doc_id in file_path:
                     logger.debug(f"Deleting file: {file_path}")
-                    os.remove(os.path.join("uploads", file_path))
+                    os.remove(os.path.join(uploads_path, file_path))
                     break
         except Exception as e:
             logger.warning(f"Error deleting document file: {e}")

@@ -1,13 +1,16 @@
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
 
 class Settings(BaseSettings):
     # Server settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     
-    # Database settings
-    KUZUDB_PATH: str = "/data/kuzu"
+    # Path settings - consolidated to a single data directory
+    DATA_ROOT: str = "/data"
+    KUZUDB_PATH: str = os.path.join(DATA_ROOT, "kuzu_db")
+    UPLOADS_PATH: str = os.path.join(DATA_ROOT, "uploads")
     
     # Model settings
     YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"
