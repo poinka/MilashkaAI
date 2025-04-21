@@ -10,8 +10,9 @@ ENV/
 env.bak/
 venv.bak/
 
-# FalkorDB/Redis data
-dump.rdb
+# kuzudb data
+data/kuzudb
+uploads/
 
 # Node / Extension build artifacts
 node_modules/

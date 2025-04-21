@@ -25,10 +25,10 @@ router = APIRouter(
     }
 )
 
-async def save_upload_file(file: UploadFile) -> str:
+async def save_upload_file(file: UploadFile, id: str) -> str:
     os.makedirs("uploads", exist_ok=True)
     ext = os.path.splitext(file.filename)[1]
-    unique_filename = f"{uuid.uuid4()}{ext}"
+    unique_filename = f"{id}{ext}"
     file_path = os.path.join("uploads", unique_filename)
     
     async with aiofiles.open(file_path, 'wb') as out_file:
@@ -58,8 +58,8 @@ async def upload_document(
         )
 
     try:
-        file_path = await save_upload_file(file)
         doc_id = str(uuid.uuid4())
+        file_path = await save_upload_file(file, doc_id)
         now = datetime.utcnow()
         metadata = DocumentMetadata(
             doc_id=doc_id,
@@ -190,24 +190,29 @@ async def delete_document(doc_id: str):
         conn = get_db_connection()
         
         document = await get_document_status(doc_id)
-        
+
+        # Delete the document and associated chunks from the database
         conn.execute("""
             MATCH (d:Document {doc_id: $doc_id})
             OPTIONAL MATCH (d)-[:Contains]->(c:Chunk)
             DETACH DELETE d, c
         """, {"doc_id": doc_id})
         
+        # Attempt to delete the associated file from the uploads directory
         try:
+            logger.debug("Listing files in 'uploads' directory")
             file_paths = os.listdir("uploads")
+            logger.debug(f"Files in 'uploads': {file_paths}")
+            
             for file_path in file_paths:
                 if doc_id in file_path:
+                    logger.debug(f"Deleting file: {file_path}")
                     os.remove(os.path.join("uploads", file_path))
                     break
         except Exception as e:
             logger.warning(f"Error deleting document file: {e}")
         
         return document
-        
     except HTTPException:
         raise
     except Exception as e:

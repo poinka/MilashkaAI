@@ -325,4 +325,4 @@ class BackgroundService {
 }
 
 const backgroundService = new BackgroundService();
-console.log("MilashkaAI background service initialized.");
+console.log("MilashkaAI background service initialized.")
