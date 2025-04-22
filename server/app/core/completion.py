@@ -28,7 +28,7 @@ async def generate_completion(
                 chunk_id STRING,
                 doc_id STRING,
                 text STRING,
-                embedding VECTOR[FLOAT, 768],
+                embedding FLOAT[768],
                 created_at STRING,
                 PRIMARY KEY (chunk_id)
             )

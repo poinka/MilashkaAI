@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # RAG settings
     RAG_TOP_K: int = 5
     RAG_SIMILARITY_THRESHOLD: float = 0.7
-    VECTOR_DIMENSION: int = 384
+    VECTOR_DIMENSION: int = 768
     
     # Document processing
     MAX_DOCUMENT_SIZE: int = 50 * 1024 * 1024  # 50MB

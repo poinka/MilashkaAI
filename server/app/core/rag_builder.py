@@ -165,7 +165,8 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
                 "chunk_id": chunk_id,
                 "doc_id": doc_id,
                 "text": chunked_text,
-                "embedding": embedding.tolist()
+                "embedding": embedding.tolist(),
+                "created_at": now
             })
 
             # Create relationship between document and chunk

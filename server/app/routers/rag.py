@@ -30,10 +30,6 @@ async def search_documents(
         results = await retrieve_relevant_chunks(
             query,
             top_k,
-            db,
-            filter_doc_id=doc_id,
-            similarity_threshold=min_similarity,
-            use_cache=True
         )
         
         return {
