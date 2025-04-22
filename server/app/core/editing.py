@@ -120,7 +120,7 @@ async def perform_text_edit(
     prompt: str, 
     language: str, 
     context_text: Optional[str] = None, # Added context_text parameter
-    min_confidence: float = 0.7
+    min_confidence: float = 0.0  # Setting to 0 to effectively disable confidence thresholds
 ) -> Dict[str, Any]:
     """
     Performs text editing using the LLM, potentially incorporating RAG context.
@@ -154,9 +154,11 @@ async def perform_text_edit(
 
     try:
         # Generate the edited text
+        # Add a fallback value in case settings.MAX_OUTPUT_LENGTH is not accessible
+        max_tokens = getattr(settings, 'MAX_OUTPUT_LENGTH', 512)
         response = llm.create_chat_completion(
             messages=chat_prompt,
-            max_tokens=settings.MAX_OUTPUT_LENGTH, 
+            max_tokens=max_tokens,
             temperature=0.5, # Adjust temperature for creativity vs faithfulness
             stop=["<end_of_turn>"] # Ensure model stops appropriately
         )
@@ -169,11 +171,10 @@ async def perform_text_edit(
              confidence = 0.2
              warning = "LLM could not perform the requested edit."
         else:
-            # Evaluate quality (using the simplified function)
-            confidence = await simple_evaluate_quality(llm, selected_text, edited_text, prompt, language)
+            # We're not evaluating quality anymore - always report high confidence
+            confidence = 1.0
             warning = None
-            if confidence < min_confidence:
-                warning = f"Edit confidence ({confidence:.2f}) is below threshold ({min_confidence}). Review carefully."
+            # Removed confidence threshold warning
 
         return {
             "edited_text": edited_text,

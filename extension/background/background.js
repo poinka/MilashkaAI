@@ -98,6 +98,7 @@ class BackgroundService {
     async handleMessage(request, sender, sendResponse) {
         const handlers = {
             GET_COMPLETION: () => this.handleCompletion(request),
+            GET_COMPLETION_STREAM: () => this.handleCompletionStream(request),
             UPLOAD_DOCUMENT: () => this.handleUpload(request),
             TRANSCRIBE_AUDIO: () => this.handleTranscription(request),
             EDIT_TEXT: () => this.handleEdit(request),
@@ -120,7 +121,12 @@ class BackgroundService {
             // Execute handler directly and get its result
             const result = await handler();
             console.log(`Result for ${request.type}:`, result);
-            sendResponse({ success: true, ...result });
+            // For streaming completions, don't overwrite the stream property
+            if (request.type === 'GET_COMPLETION_STREAM') {
+                sendResponse({ success: true, ...result });
+            } else {
+                sendResponse({ success: true, ...result });
+            }
         } catch (error) {
             console.error(`Error handling ${request.type}:`, error);
             sendResponse({ success: false, error: error.message || "Operation failed" });
@@ -150,6 +156,101 @@ class BackgroundService {
             })
         });
         return { suggestion: response.suggestion };
+    }
+
+    async handleCompletionStream(request) {
+        try {
+            const apiUrl = await this.getApiUrl();
+            const url = `${apiUrl}/completion/stream`;
+            
+            console.log(`Starting streaming completion from ${url}`);
+            
+            // Initialize SSE connection
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Client-Version': chrome.runtime.getManifest().version
+                },
+                body: JSON.stringify({
+                    current_text: request.current_text,
+                    full_document_context: request.full_document_context,
+                    language: request.language || 'ru'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            // Setup streaming
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullSuggestion = '';
+            let buffer = '';
+            
+            return {
+                stream: true,
+                responseReader: reader,
+                readNextChunk: async () => {
+                    try {
+                        const { value, done } = await reader.read();
+                        
+                        if (done) {
+                            clearTimeout(timeoutId);
+                            return { done: true };
+                        }
+                        
+                        const chunk = decoder.decode(value, { stream: true });
+                        buffer += chunk;
+                        
+                        // Process complete SSE messages
+                        const messages = [];
+                        const lines = buffer.split('\n\n');
+                        
+                        // Process all complete messages
+                        buffer = lines.pop() || ''; // Keep the last incomplete part in buffer
+                        
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    if (data.token) {
+                                        fullSuggestion += data.token;
+                                        messages.push({
+                                            token: data.token,
+                                            suggestion: fullSuggestion
+                                        });
+                                    }
+                                    if (data.done) {
+                                        messages.push({ done: true });
+                                    }
+                                } catch (e) {
+                                    console.error('Error parsing SSE data:', e);
+                                }
+                            }
+                        }
+                        
+                        return { messages, done: false };
+                    } catch (error) {
+                        clearTimeout(timeoutId);
+                        reader.cancel();
+                        throw error;
+                    }
+                },
+                cancel: () => {
+                    clearTimeout(timeoutId);
+                    reader.cancel();
+                }
+            };
+        } catch (error) {
+            console.error('Streaming completion error:', error);
+            throw error;
+        }
     }
 
     async handleUpload(request) {

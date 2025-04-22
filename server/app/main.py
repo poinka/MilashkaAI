@@ -1,3 +1,16 @@
+import logging
+import sys
+
+# Configure logging at the start of the file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Log to stdout to ensure visibility in Docker
+    ]
+)
+logging.getLogger().setLevel(logging.INFO)  # Set root logger to INFO
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager

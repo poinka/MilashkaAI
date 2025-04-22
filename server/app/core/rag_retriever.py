@@ -41,58 +41,56 @@ async def retrieve_relevant_chunks(
         
         # Generate query embedding
         query_vector = embedding_pipeline.encode([query_text])[0]
-        query_vector = query_vector / np.linalg.norm(query_vector)  # Normalize the query vector
-        
-        # Fetch all chunks (with optional doc_id filter)
+
+        # Build query based on whether we have a doc_id filter
         if filter_doc_id:
-            query = """
-            MATCH (c:Chunk)
-            WHERE c.doc_id = $doc_id
-            RETURN c.chunk_id, c.text, c.doc_id, c.embedding
-            """
-            params = {"doc_id": filter_doc_id}
-        else:
-            query = """
-            MATCH (c:Chunk)
-            RETURN c.chunk_id, c.text, c.doc_id, c.embedding
-            """
-            params = {}
-
-        logger.debug(f"Executing query: {query}")
-        logger.debug(f"With parameters: {params}")
-
-        result = db.execute(query, params)
-        chunks = []
-        while result.has_next():
-            row = result.get_next()
-            chunks.append({
-                "chunk_id": row[0],
-                "text": row[1],
-                "doc_id": row[2],
-                "embedding": np.array(row[3])
+            results = db.execute("""
+                MATCH (c:Chunk)
+                WHERE c.doc_id = $doc_id
+                WITH c, vector_cosine_similarity(c.embedding, $embedding) as score
+                ORDER BY score DESC
+                LIMIT $top_k
+                RETURN c.chunk_id, c.text, c.doc_id, score
+            """, {
+                "doc_id": filter_doc_id,
+                "embedding": query_vector.tolist(),
+                "top_k": top_k
             })
-
-        # Compute cosine similarity in Python
-        scored_chunks = []
-        for chunk in chunks:
-            chunk_embedding = chunk["embedding"]
-            if chunk_embedding is None or len(chunk_embedding) != len(query_vector):
-                logger.warning(f"Invalid embedding for chunk {chunk['chunk_id']}, skipping")
-                continue
-            chunk_embedding = chunk_embedding / np.linalg.norm(chunk_embedding)  # Normalize
-            score = float(np.dot(query_vector, chunk_embedding))  # Cosine similarity
-            scored_chunks.append({
-                "text": chunk["text"],
-                "score": score,
+        else:
+            results = db.execute("""
+                MATCH (c:Chunk)
+                WITH c, vector_cosine_similarity(c.embedding, $embedding) as score
+                ORDER BY score DESC
+                LIMIT $top_k
+                RETURN c.chunk_id, c.text, c.doc_id, score
+            """, {
+                "embedding": query_vector.tolist(),
+                "top_k": top_k
+            })
+        
+        chunks = []
+        while results.has_next():
+            row = results.get_next()
+            chunks.append({
+                "text": row[1],
+                "score": float(row[3]),
                 "metadata": {
-                    "doc_id": chunk["doc_id"],
-                    "chunk_id": chunk["chunk_id"]
+                    "doc_id": row[2],
+                    "chunk_id": row[0]
                 }
             })
-
-        # Sort by score and take top_k
-        scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-        return scored_chunks[:top_k]
+        
+        # Add detailed logging for chunks
+        if chunks:
+            logging.info(f"📚 Retrieved {len(chunks)} chunks with scores:")
+            for i, chunk in enumerate(chunks):
+                # Truncate text to avoid excessively long logs
+                preview = chunk["text"][:150] + "..." if len(chunk["text"]) > 150 else chunk["text"]
+                logging.info(f"Chunk {i+1} (Score: {chunk['score']:.4f}): \"{preview}\"")
+        else:
+            logging.info("No chunks found matching the query")
+        
+        return chunks
 
     except Exception as e:
         logger.error(f"Error retrieving chunks: {e}", exc_info=True)

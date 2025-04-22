@@ -35,3 +35,6 @@ https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions
 docker run -it -p 80:80 docker/getting-started
 docker-compose build server
 docker-compose up
+
+Чтобы посмотреть логи сервера:
+docker-compose logs -f server

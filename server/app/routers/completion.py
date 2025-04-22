@@ -2,11 +2,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Optional
+import json
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.schemas.models import CompletionRequest, CompletionResponse
 from app.schemas.errors import ErrorResponse
-from app.core.completion import generate_completion
+from app.core.completion import generate_completion, generate_completion_stream
 from app.core.rag_retriever import retrieve_relevant_chunks
 
 # Configure logging
@@ -26,9 +28,7 @@ router = APIRouter(
     }
 )
 
-@router.post("/",
-    response_model=CompletionResponse,
-    summary="Generate text completion")
+@router.post("/", response_model=CompletionResponse, summary="Generate text completion")
 async def get_completion(request: CompletionRequest):
     """
     Generate a completion for the given text, using RAG context if available.
@@ -90,13 +90,11 @@ async def get_completion(request: CompletionRequest):
             detail=f"Completion generation failed: {str(e)}"
         )
 
-@router.post("/stream",
-    response_model=CompletionResponse,
-    summary="Stream text completion")
+@router.post("/stream", summary="Stream text completion token-by-token")
 async def stream_completion(request: CompletionRequest):
     """
-    Stream completion tokens as they're generated.
-    Returns a streaming response of completion chunks.
+    Generate a completion for the given text, streaming the output token-by-token.
+    Uses Server-Sent Events format.
     """
     logger.info(f"Handling POST /api/v1/completion/stream request with current_text: {request.current_text}")
     try:
@@ -121,19 +119,18 @@ async def stream_completion(request: CompletionRequest):
             logger.debug(f"Starting streaming completion for language: {request.language}")
             async for token in generate_completion(
                 request.current_text,
-                context if context else None,
-                request.language,
-                stream=True
+                request.full_document_context,
+                request.language
             ):
                 logger.debug(f"Streaming token: {token}")
                 yield token
         
         logger.info("Streaming completion started")
         return StreamingResponse(
-            completion_generator(),
+            generate_sse_events(),
             media_type="text/event-stream"
         )
-
+        
     except Exception as e:
         logger.error(f"Streaming completion failed: {str(e)}", exc_info=True)
         raise HTTPException(

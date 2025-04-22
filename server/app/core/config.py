@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     # Path settings - consolidated to a single data directory
     DATA_ROOT: str = "/data"
     KUZUDB_PATH: str = os.path.join(DATA_ROOT, "kuzu_db")
-    UPLOADS_PATH: str = os.path.join(DATA_ROOT, "uploads")
-    
+    UPLOADS_PATH: str = "/app/uploads"  # Matches docker-compose volume mount
+
     # Model settings
     YANDEX_MODEL_ID: str = "yandex/YandexGPT-5-Lite-8B-instruct"
     GEMMA_MODEL_ID: str = "google/gemma-3-4b-it-qat-q4_0-gguf"

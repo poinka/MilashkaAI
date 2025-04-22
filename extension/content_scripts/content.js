@@ -670,12 +670,83 @@ async function requestCompletion(text, element) {
             return;
         }
 
+        // Try using the streaming endpoint first
+        try {
+            console.log("Attempting streaming completion...");
+            const streamResponse = await chrome.runtime.sendMessage({
+                type: "GET_COMPLETION_STREAM", // Use the streaming endpoint
+                current_text: text,
+                language: document.documentElement.lang || 'ru'
+            }).catch(err => {
+                if (err.message.includes("Extension context invalidated")) {
+                    console.warn("Extension context was invalidated. Please refresh the page.");
+                    throw err; // Re-throw to be caught by outer try/catch
+                }
+                throw err; // Re-throw any other error
+            });
+            
+            if (streamResponse && streamResponse.success && streamResponse.stream) {
+                // Handle the streaming response
+                console.log("Using streaming completion");
+                let currentSuggestion = "";
+                const streamingInterval = setInterval(async () => {
+                    try {
+                        // Check if element is still active
+                        if (document.activeElement !== element) {
+                            clearInterval(streamingInterval);
+                            if (typeof streamResponse.cancel === 'function') {
+                                streamResponse.cancel();
+                            } else {
+                                console.log("No cancel function available");
+                            }
+                            return;
+                        }
+                        
+                        // Get next chunk of tokens
+                        const chunk = await streamResponse.readNextChunk();
+                        
+                        if (chunk.done) {
+                            clearInterval(streamingInterval);
+                            return;
+                        }
+                        
+                        // Process token chunks
+                        if (chunk.messages && chunk.messages.length > 0) {
+                            // Update with most recent suggestion
+                            const lastMessage = chunk.messages[chunk.messages.length - 1];
+                            if (lastMessage.suggestion) {
+                                currentSuggestion = lastMessage.suggestion;
+                                
+                                if (document.activeElement === element) {
+                                    suggestionManager.displaySuggestion(element, currentSuggestion);
+                                }
+                            }
+                            
+                            if (lastMessage.done) {
+                                clearInterval(streamingInterval);
+                            }
+                        }
+                    } catch (error) {
+                        console.error("Error during stream processing:", error);
+                        clearInterval(streamingInterval);
+                    }
+                }, 100); // Check for new tokens every 100ms
+                
+                return; // Exit early - we're handling this with streaming
+            }
+        } catch (streamError) {
+            // If streaming fails, fall back to non-streaming endpoint
+            console.warn("Streaming completion failed, falling back to standard completion:", streamError);
+        }
+        
+        // Fall back to regular completion if streaming isn't available or failed
+        console.log("Falling back to standard completion");
         const response = await chrome.runtime.sendMessage({
-            type: "GET_COMPLETION",
+            type: "GET_COMPLETION", // Original non-streaming endpoint
             current_text: text,
             language: document.documentElement.lang || 'ru'
         }).catch(err => {
-// Handle potential disconnection errors
+            // Handle potential disconnection errors
             if (err.message.includes("Extension context invalidated")) {
                 console.warn("Extension context was invalidated. Please refresh the page.");
                 return { success: false, error: "Extension context invalidated" };

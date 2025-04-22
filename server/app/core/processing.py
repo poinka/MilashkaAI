@@ -109,7 +109,7 @@ async def process_uploaded_document(doc_id: str, file: UploadFile):
                 chunk_id STRING,
                 doc_id STRING,
                 text STRING,
-                embedding FLOAT[768],
+                embedding VECTOR[768],
                 created_at STRING,
                 PRIMARY KEY (chunk_id)
             )
