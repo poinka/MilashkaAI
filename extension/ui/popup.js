@@ -133,17 +133,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function uploadFile(file) {
         const reader = new FileReader();
-        
         return new Promise((resolve, reject) => {
             reader.onload = async (e) => {
+                if (!(e.target.result instanceof ArrayBuffer)) {
+                    reject(new Error('File data is not an ArrayBuffer'));
+                    return;
+                }
+                const uint8Array = new Uint8Array(e.target.result);
+                console.log('Sending file data:', uint8Array.slice(0, 10));
                 try {
                     const response = await chrome.runtime.sendMessage({
                         type: "UPLOAD_DOCUMENT",
                         filename: file.name,
                         filetype: file.type,
-                        fileData: e.target.result
+                        fileData: Array.from(uint8Array) // Convert to array for serialization
                     });
-
                     if (response.success) {
                         updateProgress((Array.from(selectedFiles).indexOf(file) + 1) / selectedFiles.size * 100);
                         resolve(response);
@@ -154,12 +158,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     reject(error);
                 }
             };
-
             reader.onerror = () => reject(new Error('File reading failed'));
             reader.readAsArrayBuffer(file);
         });
     }
-
+    
     function updateProgress(percent) {
         progressBar.style.width = `${percent}%`;
         progressText.textContent = `${Math.round(percent)}%`;

@@ -254,10 +254,16 @@ class BackgroundService {
     }
 
     async handleUpload(request) {
+        if (!Array.isArray(request.fileData)) {
+            console.error('Invalid fileData type:', request.fileData, 'Expected Array');
+            throw new Error('File data must be an array of bytes');
+        }
+        const uint8Array = new Uint8Array(request.fileData);
+        console.log('Received fileData sample:', uint8Array.slice(0, 10));
+        console.log('Filename:', request.filename, 'Filetype:', request.filetype);
         const formData = new FormData();
-        const blob = new Blob([request.fileData], { type: request.filetype });
+        const blob = new Blob([uint8Array], { type: request.filetype });
         formData.append('file', blob, request.filename);
-
         const response = await this.fetchAPI('/documents/upload', {
             method: 'POST',
             body: formData
