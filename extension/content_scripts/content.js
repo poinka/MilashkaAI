@@ -1,4 +1,3 @@
-// Content script for text completion and editing
 console.log("MilashkaAI content script loaded.");
 
 class SuggestionManager {
@@ -12,7 +11,6 @@ class SuggestionManager {
     }
 
     setupMutationObserver() {
-        // Watch for dynamic content changes
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 if (mutation.type === 'childList') {
@@ -28,7 +26,6 @@ class SuggestionManager {
     }
 
     getCaretCoordinates(element, position) {
-        // Create a temporary span to measure the position
         const tempSpan = document.createElement('span');
         tempSpan.style.position = 'absolute';
         tempSpan.style.visibility = 'hidden';
@@ -44,7 +41,6 @@ class SuggestionManager {
 
         document.body.removeChild(tempSpan);
 
-        // Calculate the precise position
         const lineHeight = parseInt(window.getComputedStyle(element).lineHeight);
         const lines = textBeforeCaret.split('\n');
         const currentLine = lines[lines.length - 1];
@@ -62,19 +58,17 @@ class SuggestionManager {
             return;
         }
 
-        // Remove existing suggestion
         this.clearSuggestion();
 
         this.currentSuggestion = suggestionText;
         this.activeInputElement = element;
 
-        // Create suggestion element with improved styling
         this.suggestionElement = document.createElement('div');
         this.suggestionElement.textContent = suggestionText;
         this.suggestionElement.className = 'milashka-suggestion';
         Object.assign(this.suggestionElement.style, {
             position: 'absolute',
-            backgroundColor: 'rgba(0, 0, 0, 0.05)',
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
             borderRadius: '2px',
             padding: '2px 4px',
             color: '#666',
@@ -87,7 +81,6 @@ class SuggestionManager {
         document.body.appendChild(this.suggestionElement);
         this.updateSuggestionPosition();
 
-        // Add scroll listener to update position
         element.addEventListener('scroll', () => this.updateSuggestionPosition());
         window.addEventListener('scroll', () => this.updateSuggestionPosition());
         window.addEventListener('resize', () => this.updateSuggestionPosition());
@@ -101,7 +94,6 @@ class SuggestionManager {
             this.activeInputElement.selectionStart
         );
 
-        // Adjust position based on scroll
         const scrollX = window.scrollX || window.pageXOffset;
         const scrollY = window.scrollY || window.pageYOffset;
 
@@ -122,10 +114,7 @@ class SuggestionManager {
     acceptSuggestion() {
         if (this.currentSuggestion && this.activeInputElement) {
             this.insertText(this.activeInputElement, this.currentSuggestion);
-            
-            // Track suggestion acceptance for improving recommendations
             this.trackSuggestionFeedback(true);
-            
             this.clearSuggestion();
             return true;
         }
@@ -135,7 +124,6 @@ class SuggestionManager {
     trackSuggestionFeedback(wasAccepted) {
         if (!this.currentSuggestion) return;
         
-        // Get surrounding context for better recommendation improvement
         let context = '';
         if (this.activeInputElement && this.activeInputElement.value) {
             const start = Math.max(0, this.activeInputElement.selectionStart - 200);
@@ -143,7 +131,6 @@ class SuggestionManager {
             context = this.activeInputElement.value.substring(start, end);
         }
         
-        // Send feedback to the server
         chrome.runtime.sendMessage({
             type: "TRACK_SUGGESTION",
             suggestion_text: this.currentSuggestion,
@@ -160,9 +147,7 @@ class SuggestionManager {
         const start = element.selectionStart;
         const end = element.selectionEnd;
         const originalText = element.value;
-        element.value = originalText.substring(0, start) + 
-                       textToInsert + 
-                       originalText.substring(end);
+        element.value = originalText.substring(0, start) + textToInsert + originalText.substring(end);
         element.selectionStart = element.selectionEnd = start + textToInsert.length;
         element.dispatchEvent(new Event('input', { bubbles: true }));
     }
@@ -249,13 +234,12 @@ class EditingUI {
         });
         cancelButton.textContent = 'Cancel';
 
-        buttonsWrapper.appendChild(submitButton);
+buttonsWrapper.appendChild(submitButton);
         buttonsWrapper.appendChild(cancelButton);
 
-        this.floatingMenu.appendChild(inputWrapper);
+this.floatingMenu.appendChild(inputWrapper);
         this.floatingMenu.appendChild(buttonsWrapper);
 
-        // Event handlers
         submitButton.onclick = () => {
             if (!this.isProcessing && input.value) {
                 this.performEdit(this.currentSelection, input.value);
@@ -330,15 +314,12 @@ class EditingUI {
         if (selection.rangeCount > 0) {
             const range = selection.getRangeAt(0);
             
-            // Create a temporary element to properly handle formatting
             const temp = document.createElement('div');
             temp.innerHTML = editedText;
             
-            // Apply the edit
             range.deleteContents();
             range.insertNode(temp.firstChild);
             
-            // Show confidence feedback if low
             if (confidence < 0.7) {
                 this.showFeedback(
                     'Low confidence in edit. Please review the changes.',
@@ -396,7 +377,6 @@ class EditingUI {
         const voiceButton = this.floatingMenu.querySelector('button:not([class*="submit"])');
         const input = this.floatingMenu.querySelector('input');
         
-        // Update button state
         voiceButton.innerHTML = '⏹️';
         voiceButton.style.backgroundColor = '#f44336';
         
@@ -406,7 +386,6 @@ class EditingUI {
             if (input && this.floatingMenu) {
                 input.value = formattedText;
                 
-                // Reset button state
                 voiceButton.innerHTML = '🎙️';
                 voiceButton.style.backgroundColor = '#4CAF50';
             }
@@ -491,6 +470,7 @@ class SpeechManager {
     startRecording(targetElement = null, isEditMode = false, callback = null) {
         if (!this.recognition) {
             console.error('Speech recognition not available');
+            this.showPermissionFeedback('Speech recognition not supported in this browser');
             return false;
         }
         
@@ -500,6 +480,26 @@ class SpeechManager {
         this.finalTranscription = '';
         this.interimTranscription = '';
         
+        // Check if we need to request microphone permission
+        navigator.permissions.query({ name: 'microphone' }).then(permissionStatus => {
+            console.log('Microphone permission status:', permissionStatus.state);
+            
+            // Set up permission change listener
+            permissionStatus.onchange = () => {
+                console.log('Permission status changed to:', permissionStatus.state);
+                if (permissionStatus.state === 'granted') {
+                    this.showPermissionFeedback('Microphone access granted!', 'success');
+                } else if (permissionStatus.state === 'denied') {
+                    this.showPermissionFeedback('Microphone access denied. Please enable in your browser settings.', 'error');
+                }
+            };
+            
+            if (permissionStatus.state === 'denied') {
+                this.showPermissionFeedback('Microphone access denied. Please enable in your browser settings.', 'error');
+                return false;
+            }
+        });
+        
         this.createTranscriptionElement();
         
         try {
@@ -507,8 +507,31 @@ class SpeechManager {
             return true;
         } catch (error) {
             console.error('Error starting speech recognition:', error);
+            this.showPermissionFeedback('Could not start speech recognition. ' + error.message, 'error');
             return false;
         }
+    }
+    
+    showPermissionFeedback(message, type = 'warning') {
+        const feedback = document.createElement('div');
+        Object.assign(feedback.style, {
+            position: 'fixed',
+            top: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '12px 24px',
+            borderRadius: '4px',
+            color: 'white',
+            zIndex: '1000001',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            backgroundColor: type === 'error' ? '#f44336' :
+                           type === 'success' ? '#4CAF50' : '#ff9800'
+        });
+        
+        feedback.textContent = message;
+        document.body.appendChild(feedback);
+        
+        setTimeout(() => feedback.remove(), 5000);
     }
     
     stopRecording() {
@@ -518,7 +541,7 @@ class SpeechManager {
     }
     
     createTranscriptionElement() {
-        this.removeTranscriptionElement(); // Remove previous element if exists
+        this.removeTranscriptionElement();
         
         this.transcriptionElement = document.createElement('div');
         this.transcriptionElement.className = 'milashka-transcription';
@@ -595,9 +618,7 @@ class SpeechManager {
                     const end = this.targetElement.selectionEnd || 0;
                     const originalText = this.targetElement.value || '';
                     
-                    this.targetElement.value = originalText.substring(0, start) + 
-                                              formattedText + 
-                                              originalText.substring(end);
+                    this.targetElement.value = originalText.substring(0, start) + formattedText + originalText.substring(end);
                     
                     this.targetElement.selectionStart = 
                     this.targetElement.selectionEnd = start + formattedText.length;
@@ -612,12 +633,10 @@ class SpeechManager {
     }
 }
 
-// Initialize managers
 const suggestionManager = new SuggestionManager();
 const editingUI = new EditingUI();
 const speechManager = new SpeechManager();
 
-// Text input handling
 function handleInput(event) {
     const element = event.target;
     if (!isValidInputElement(element)) {
@@ -645,23 +664,41 @@ function isValidInputElement(element) {
 
 async function requestCompletion(text, element) {
     try {
+        // Check if chrome.runtime is available
+        if (!chrome.runtime || !chrome.runtime.sendMessage) {
+            console.warn("Extension context may be invalidated, aborting completion request");
+            return;
+        }
+
         const response = await chrome.runtime.sendMessage({
             type: "GET_COMPLETION",
             current_text: text,
             language: document.documentElement.lang || 'ru'
+        }).catch(err => {
+// Handle potential disconnection errors
+            if (err.message.includes("Extension context invalidated")) {
+                console.warn("Extension context was invalidated. Please refresh the page.");
+                return { success: false, error: "Extension context invalidated" };
+            }
+            throw err;
         });
 
-        if (response.success && response.suggestion) {
+        // New error handling: log and return if API error
+        if (!response || !response.success) {
+            console.error("Completion API error:", response?.error || response);
+            return;
+        }
+
+        if (response.suggestion) {
             if (document.activeElement === element) {
                 suggestionManager.displaySuggestion(element, response.suggestion);
             }
         }
     } catch (error) {
-        console.error("Completion request failed:", error);
+        console.error("Completion request failed. Don't try again immediately if there was an error - that could cause rapid retries", error);
     }
 }
 
-// Event listeners
 document.addEventListener('input', handleInput, true);
 
 document.addEventListener('keydown', (event) => {
@@ -672,7 +709,6 @@ document.addEventListener('keydown', (event) => {
                 event.preventDefault();
             }
         } else if (event.key === 'Escape') {
-            // Track rejection before clearing suggestion
             suggestionManager.trackSuggestionFeedback(false);
             suggestionManager.clearSuggestion();
             event.preventDefault();
@@ -686,22 +722,52 @@ document.addEventListener('mouseup', (event) => {
         const selection = window.getSelection();
         if (selection.rangeCount > 0) {
             editingUI.currentSelectionRange = selection.getRangeAt(0);
-            const rect = selection.getRangeAt(0).getBoundingClientRect();
             editingUI.showFloatingMenu(
                 event.clientX,
-                rect.bottom + window.scrollY + 5,
+                event.clientY + window.scrollY + 5,
                 selectedText
             );
         }
     }
 });
 
-// Message handling
+// Save the range and selection when text is selected
+let lastSelectedRange = null;
+
+document.addEventListener('mousedown', () => {
+    // Clear the last selection when clicking
+    lastSelectedRange = null;
+});
+
+document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (selection.rangeCount > 0 && selection.toString().trim().length > 0) {
+        // Store the range when a selection is made
+        lastSelectedRange = selection.getRangeAt(0).cloneRange();
+    }
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "SHOW_EDIT_UI") {
         const selectedText = request.selectedText;
-        if (selectedText) {
-            // Show near the top of viewport as fallback
+        if (selectedText && lastSelectedRange) {
+            // Restore the selection before showing the edit UI
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(lastSelectedRange);
+            
+            // Get coordinates for the floating menu
+            const rect = lastSelectedRange.getBoundingClientRect();
+            editingUI.showFloatingMenu(
+                rect.right > window.innerWidth - 200 ? rect.left : rect.right, 
+                rect.bottom + window.scrollY + 5,
+                selectedText
+            );
+            
+            // Store the current selection range for later use
+            editingUI.currentSelectionRange = lastSelectedRange;
+        } else if (selectedText) {
+            // Fallback if no range was saved
             editingUI.showFloatingMenu(10, window.scrollY + 10, selectedText);
         }
     }

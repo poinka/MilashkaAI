@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     BATCH_SIZE: int = 32
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
     CHUNK_SIZE: int = 8192
+    MAX_INPUT_LENGTH: int = 4096 # Max tokens for LLM input
+    MAX_OUTPUT_LENGTH: int = 512 # Max tokens for LLM output
     
     # RAG settings
     RAG_TOP_K: int = 5

@@ -25,12 +25,9 @@ async def get_completion(request: CompletionRequest):
     """
     try:
         # Get relevant context from indexed documents
-        db = get_db_connection()
         context_chunks = await retrieve_relevant_chunks(
             request.current_text,
-            settings.RAG_TOP_K,
-            db,
-            use_cache=True
+            settings.RAG_TOP_K
         )
         
         # Combine document context if provided

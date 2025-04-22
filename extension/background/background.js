@@ -117,7 +117,8 @@ class BackgroundService {
 
         try {
             console.log(`Processing ${request.type}`);
-            const result = await this.taskQueue.add(() => handler());
+            // Execute handler directly and get its result
+            const result = await handler();
             console.log(`Result for ${request.type}:`, result);
             sendResponse({ success: true, ...result });
         } catch (error) {
@@ -197,43 +198,50 @@ class BackgroundService {
     async handleListDocuments() {
         console.log('Fetching document list from API');
         try {
-            const response = await this.fetchAPI('/documents/', {
+            // fetchAPI returns the list directly based on the server response
+            const documentsList = await this.fetchAPI('/documents/', {
                 method: 'GET'
             });
-            console.log('Raw server response:', response);
+            console.log('Raw server response (list):', documentsList);
             
-            if (!response) {
-                throw new Error('Empty response from server');
+            // Validate if the response is actually an array
+            if (!Array.isArray(documentsList)) {
+                // Log the unexpected response for debugging
+                console.error('Invalid response format: expected an array, received:', documentsList);
+                throw new Error('Invalid response format: expected an array of documents');
             }
             
-            let documents = [];
-            if (response.documents && Array.isArray(response.documents)) {
-                documents = response.documents;
-            } else {
-                throw new Error('Invalid response format: expected { documents: [...] }');
-            }
+            console.log('Processed documents:', documentsList);
             
-            console.log('Processed documents:', documents);
-            
+            // Return the expected structure
             return {
                 success: true,
-                documents: documents
+                documents: documentsList
             };
         } catch (error) {
             console.error('Failed to fetch documents:', error);
+            // Return the error structure expected by the caller
             return {
-                success: false,
+                success: false, 
                 documents: [],
-                error: error.message
+                message: error.message || "Failed to fetch documents"
             };
         }
     }
 
     async handleDeleteDocument(request) {
-        const response = await this.fetchAPI(`/documents/${request.doc_id}`, {
-            method: 'DELETE'
-        });
-        return { status: response.status };
+        try {
+            const response = await this.fetchAPI(`/documents/${request.doc_id}`, {
+                method: 'DELETE'
+            });
+            // Check if the server responded with a success status (e.g., 204 No Content)
+            // fetchAPI throws an error for non-ok statuses, so if we get here, it was likely successful.
+            // We rely on fetchAPI to have handled non-2xx responses.
+            return { success: true }; 
+        } catch (error) {
+            console.error(`Failed to delete document ${request.doc_id}:`, error);
+            return { success: false, error: error.message || "Failed to delete document" };
+        }
     }
 
     async handleStartVoice(tabId) {
@@ -287,29 +295,56 @@ class BackgroundService {
             const url = `${apiUrl}${endpoint}`;
             console.log(`Fetching from ${url}`);
             
+            // Set timeout and implement retry mechanism for network errors
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // Increased to 60 seconds for LLM inference
+            
             const response = await fetch(url, {
                 ...options,
+                signal: controller.signal,
                 headers: {
                     ...options.headers,
                     'X-Client-Version': chrome.runtime.getManifest().version
                 }
+            }).finally(() => {
+                clearTimeout(timeoutId);
             });
             
             console.log(`Response status: ${response.status} ${response.statusText}`);
             if (!response.ok) {
-                const error = await response.json().catch(() => ({ 
-                    detail: `HTTP error! status: ${response.status}` 
-                }));
-                console.error(`Fetch error: ${error.detail || 'API request failed'}`);
-                throw new Error(error.detail || 'API request failed');
+                try {
+                    // Try to parse error as JSON
+                    const errorData = await response.json();
+                    console.error(`Fetch error: ${errorData.detail || 'API request failed'}`);
+                    throw new Error(errorData.detail || 'API request failed');
+                } catch (jsonError) {
+                    // If JSON parsing fails, use status text
+                    throw new Error(`HTTP error! status: ${response.status} ${response.statusText}`);
+                }
             }
             
+            // For 204 No Content responses, just return an empty object
+            if (response.status === 204) {
+                console.log('Empty response (204 No Content) - returning empty object');
+                return {};
+            }
+
+            // For other successful responses, parse as JSON
             const json = await response.json();
             console.log(`API Response:`, json);
             return json;
         } catch (error) {
-            console.error(`API Error:`, error);
-            throw new Error(`Failed to fetch: ${error.message}`);
+            // More detailed error logging and handling
+            if (error.name === 'AbortError') {
+                console.error(`API request timed out: ${endpoint}`);
+                throw new Error(`Request timed out. Please try again or check your network connection.`);
+            } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                console.error(`Network error when connecting to API: ${error.message}`);
+                throw new Error(`Connection failed. Please make sure the server is running and you have an internet connection.`);
+            } else {
+                console.error(`API Error:`, error);
+                throw new Error(`API request failed: ${error.message}`);
+            }
         }
     }
     

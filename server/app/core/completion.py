@@ -45,7 +45,7 @@ async def generate_completion(
             logging.info("No documents found in database for RAG.")
         else:
             query_text = current_text[-512:]
-            relevant_chunks = await retrieve_relevant_chunks(query_text, top_k=top_k_rag, db=db)
+            relevant_chunks = await retrieve_relevant_chunks(query_text, top_k=top_k_rag)
             if relevant_chunks:
                 rag_context = "\n\nRelevant Information:\n" + "\n---\n".join([chunk['text'] for chunk in relevant_chunks])
                 logging.info(f"Retrieved {len(relevant_chunks)} chunks from RAG.")
@@ -65,18 +65,30 @@ async def generate_completion(
 
     # Generate Completion
     try:
-        output = llm_model(
-            final_prompt,
+        # Debug the model interface
+        logging.debug(f"LLM model type: {type(llm_model).__name__}")
+        
+        # Llama.cpp compatible parameters
+        output = llm_model.create_completion(
+            prompt=final_prompt,
             max_tokens=MAX_NEW_TOKENS,
             temperature=0.7,
             top_k=50,
             top_p=0.9,
             stop=["<end_of_turn>", "<start_of_turn>user"]
         )
-        suggestion = output["choices"][0]["text"].strip()
-        suggestion = suggestion.split("\n")[0].strip()
-        logging.info(f"Generated suggestion: '{suggestion[:100]}...'")
-        return suggestion
+        
+        logging.debug(f"Raw LLM output: {output}")
+        
+        if "choices" in output and len(output["choices"]) > 0:
+            suggestion = output["choices"][0]["text"].strip()
+            suggestion = suggestion.split("\n")[0].strip()
+            logging.info(f"Generated suggestion: '{suggestion[:100]}...'")
+            return suggestion
+        else:
+            logging.error(f"Unexpected LLM output format: {output}")
+            return ""  # Return empty string instead of crashing
     except Exception as e:
-        logging.error(f"Error during Gemma generation: {e}")
-        raise
+        logging.error(f"Error during LLM generation: {str(e)}", exc_info=True)
+        # Return an empty string rather than raising an exception to prevent 500 errors
+        return ""

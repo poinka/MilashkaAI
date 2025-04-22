@@ -6,7 +6,6 @@ from app.schemas.models import EditRequest, EditResponse
 from app.schemas.errors import ErrorResponse
 from app.core.editing import perform_text_edit
 from app.core.rag_retriever import retrieve_relevant_chunks
-from app.db.kuzudb_client import get_db_connection
 
 router = APIRouter(
     responses={
@@ -26,20 +25,20 @@ async def edit_text(request: EditRequest):
     """
     try:
         # Get relevant context
-        db = get_db_connection()
         context_chunks = await retrieve_relevant_chunks(
             request.selected_text,
-            settings.RAG_TOP_K,
-            db,
-            use_cache=True
+            settings.RAG_TOP_K
         )
 
-        # Perform edit
+        # Combine context chunks into a single string if needed by perform_text_edit
+        context_text = "\n".join(chunk["text"] for chunk in context_chunks) if context_chunks else None
+
+        # Perform edit, passing the combined context
         result = await perform_text_edit(
             request.selected_text,
             request.prompt,
             request.language,
-            context_window=settings.MAX_INPUT_LENGTH,
+            context_text=context_text,
             min_confidence=settings.RAG_SIMILARITY_THRESHOLD
         )
 
@@ -65,12 +64,9 @@ async def preview_edits(request: EditRequest):
     """
     try:
         # Get relevant context
-        db = get_db_connection()
         context_chunks = await retrieve_relevant_chunks(
             request.selected_text,
-            settings.RAG_TOP_K,
-            db,
-            use_cache=True
+            settings.RAG_TOP_K
         )
 
         # Generate multiple alternatives

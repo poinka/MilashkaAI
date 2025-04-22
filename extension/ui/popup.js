@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Elements
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('file-input');
     const dropZone = document.getElementById('drop-zone');
@@ -94,7 +93,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         dropZone.appendChild(fileList);
 
-        // Add remove handlers
         fileList.querySelectorAll('.remove-file').forEach(button => {
             button.onclick = (e) => {
                 e.stopPropagation();
@@ -106,7 +104,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- File Upload Handling ---
     uploadForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         if (isUploading || selectedFiles.size === 0) return;
@@ -216,7 +213,6 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
     
-
         filteredDocs.forEach(doc => {
             const li = document.createElement('li');
             li.innerHTML = `
@@ -232,20 +228,21 @@ document.addEventListener('DOMContentLoaded', () => {
         // Add delete handlers
         docList.querySelectorAll('.delete-doc').forEach(button => {
             button.onclick = async () => {
-                if (confirm('Delete this document?')) {
-                    try {
-                        const response = await chrome.runtime.sendMessage({
-                            type: "DELETE_DOCUMENT",
-                            doc_id: button.dataset.id
-                        });
-                        if (response.success) {
-                            loadDocumentList();
-                        } else {
-                            showError('Failed to delete document: ' + response.error);
-                        }
-                    } catch (error) {
-                        showError('Error deleting document: ' + error.message);
+                try {
+                    console.log(`Deleting document ${button.dataset.id}...`);
+                    const response = await chrome.runtime.sendMessage({
+                        type: "DELETE_DOCUMENT",
+                        doc_id: button.dataset.id
+                    });
+                    console.log(`Received delete response:`, response);
+                    if (response.success) {
+                        loadDocumentList(); // Refresh list on success
+                    } else {
+                        showError('Failed to delete document: ' + response.error);
                     }
+                } catch (error) {
+                    console.error(`Error deleting document:`, error);
+                    showError('Error deleting document: ' + error.message);
                 }
             };
         });
