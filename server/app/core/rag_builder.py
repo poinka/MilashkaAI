@@ -99,84 +99,143 @@ def chunk_text(text: str, strategy: str = "paragraph", max_chunk_size: int = 512
     return final_chunks
 
 async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
-    """Builds a graph in KuzuDB with nodes and relationships."""
     logging.info(f"Starting RAG graph build for doc_id: {doc_id}")
     
     try:
-        conn: Connection = get_db_connection()
+        conn = get_db_connection()
         embedding_pipeline = get_embedding_pipeline()
-
-        # Create schema with error handling for existing tables
+        
+        # Existing schema creation (Document, Chunk, Contains)
         create_document_table = f"""
         CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
-            doc_id STRING,
-            filename STRING,
-            processed_at STRING,
-            status STRING,
-            created_at STRING,
-            updated_at STRING,
-            PRIMARY KEY (doc_id)
-        )
-        """
+            doc_id STRING, filename STRING, processed_at STRING, status STRING,
+            created_at STRING, updated_at STRING, PRIMARY KEY (doc_id)
+        )"""
         create_chunk_table = f"""
         CREATE NODE TABLE IF NOT EXISTS {CHUNK_TABLE} (
-            chunk_id STRING,
-            doc_id STRING,
-            text STRING,
-            embedding VECTOR({settings.VECTOR_DIMENSION}),
-            PRIMARY KEY (chunk_id)
-        )
-        """
+            chunk_id STRING, doc_id STRING, text STRING,
+            embedding FLOAT[{settings.VECTOR_DIMENSION}], PRIMARY KEY (chunk_id)
+        )"""
         create_contains_rel = f"""
         CREATE REL TABLE IF NOT EXISTS {CONTAINS_RELATIONSHIP} (
             FROM {DOCUMENT_TABLE} TO {CHUNK_TABLE}
-        )
-        """
+        )"""
         
-        # Execute schema creation queries
-        for query in [create_document_table, create_chunk_table, create_contains_rel]:
+        # New schema for requirements and entities
+        create_requirement_table = """
+        CREATE NODE TABLE IF NOT EXISTS Requirement (
+            req_id STRING, type STRING, description STRING, created_at STRING,
+            PRIMARY KEY (req_id)
+        )"""
+        create_entity_table = """
+        CREATE NODE TABLE IF NOT EXISTS Entity (
+            entity_id STRING, type STRING, name STRING, PRIMARY KEY (entity_id)
+        )"""
+        create_implements_rel = """
+        CREATE REL TABLE IF NOT EXISTS Implements (
+            FROM Requirement TO Entity
+        )"""
+        create_described_by_rel = """
+        CREATE REL TABLE IF NOT EXISTS DescribedBy (
+            FROM Requirement TO Chunk
+        )"""
+        create_references_rel = """
+        CREATE REL TABLE IF NOT EXISTS References (
+            FROM Requirement TO Document
+        )"""
+        
+        for query in [create_document_table, create_chunk_table, create_contains_rel,
+                      create_requirement_table, create_entity_table,
+                      create_implements_rel, create_described_by_rel, create_references_rel]:
             conn.execute(query)
-
+        
         # Insert document node
         now = datetime.now().isoformat()
         conn.execute(f"""
-            CREATE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id, filename: $filename, processed_at: $processed_at, status: $status, created_at: $created_at, updated_at: $updated_at}})
+            CREATE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id, filename: $filename,
+                processed_at: $processed_at, status: $status,
+                created_at: $created_at, updated_at: $updated_at}})
         """, {
-            "doc_id": doc_id,
-            "filename": filename,
-            "processed_at": now,
-            "status": "indexed",
-            "created_at": now,
-            "updated_at": now
+            "doc_id": doc_id, "filename": filename, "processed_at": now,
+            "status": "indexed", "created_at": now, "updated_at": now
         })
-
-        # Process text into chunks and generate embeddings
-        text_chunks = chunk_text(text)  
+        
+        # Chunk text and generate embeddings
+        text_chunks = chunk_text(text)
         embeddings = embedding_pipeline.encode(text_chunks, batch_size=32)
-
+        
+        # Extract requirements (simplified example using SpaCy)
+        requirements = []
+        entities = []
+        doc = nlp(text)
+        for sent in doc.sents:
+            if any(token.lemma_ in ["require", "must", "shall"] for token in sent):
+                req_id = f"req_{doc_id}_{len(requirements)}"
+                req_type = "functional" if "function" in sent.text.lower() else "non-functional"
+                requirements.append({"req_id": req_id, "type": req_type, "description": sent.text})
+            for ent in sent.ents:
+                entities.append({"entity_id": f"ent_{doc_id}_{len(entities)}",
+                               "type": ent.label_.lower(), "name": ent.text})
+        
         # Insert chunks and relationships
         for i, (chunked_text, embedding) in enumerate(zip(text_chunks, embeddings)):
             chunk_id = f"{doc_id}_chunk_{i}"
-            
-            # Insert chunk node
             conn.execute(f"""
-                CREATE (c:{CHUNK_TABLE} {{chunk_id: $chunk_id, doc_id: $doc_id, text: $text, embedding: $embedding}})
+                CREATE (c:{CHUNK_TABLE} {{chunk_id: $chunk_id, doc_id: $doc_id,
+                    text: $text, embedding: $embedding}})
             """, {
-                "chunk_id": chunk_id,
-                "doc_id": doc_id,
-                "text": chunked_text,
-                "embedding": embedding.tolist(),
-                "created_at": now
+                "chunk_id": chunk_id, "doc_id": doc_id, "text": chunked_text,
+                "embedding": embedding.tolist()
             })
-
-            # Create relationship between document and chunk
             conn.execute(f"""
-                MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}}), (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
+                MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}}),
+                      (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
                 CREATE (d)-[:{CONTAINS_RELATIONSHIP}]->(c)
             """, {"doc_id": doc_id, "chunk_id": chunk_id})
-
-        logging.info(f"Successfully built RAG graph for doc_id: {doc_id}")
-
+            
+            # Link requirements to chunks (if chunk contains requirement text)
+            for req in requirements:
+                if req["description"] in chunked_text:
+                    conn.execute("""
+                        MATCH (r:Requirement {req_id: $req_id}),
+                              (c:Chunk {chunk_id: $chunk_id})
+                        CREATE (r)-[:DescribedBy]->(c)
+                    """, {"req_id": req["req_id"], "chunk_id": chunk_id})
+        
+        # Insert requirements
+        for req in requirements:
+            conn.execute("""
+                CREATE (r:Requirement {req_id: $req_id, type: $type,
+                    description: $description, created_at: $created_at})
+            """, {
+                "req_id": req["req_id"], "type": req["type"],
+                "description": req["description"], "created_at": now
+            })
+            # Link requirement to document
+            conn.execute("""
+                MATCH (r:Requirement {req_id: $req_id}),
+                      (d:Document {doc_id: $doc_id})
+                CREATE (r)-[:References]->(d)
+            """, {"req_id": req["req_id"], "doc_id": doc_id})
+        
+        # Insert entities
+        for ent in entities:
+            conn.execute("""
+                CREATE (e:Entity {entity_id: $entity_id, type: $type, name: $name})
+            """, {
+                "entity_id": ent["entity_id"], "type": ent["type"], "name": ent["name"]
+            })
+            # Link requirements to entities (simplified: link if entity mentioned in requirement)
+            for req in requirements:
+                if ent["name"].lower() in req["description"].lower():
+                    conn.execute("""
+                        MATCH (r:Requirement {req_id: $req_id}),
+                              (e:Entity {entity_id: $entity_id})
+                        CREATE (r)-[:Implements]->(e)
+                    """, {"req_id": req["req_id"], "entity_id": ent["entity_id"]})
+        
+        logging.info(f"Built RAG graph with {len(requirements)} requirements for doc_id: {doc_id}")
+        
     except Exception as e:
         logging.error(f"Error building RAG graph: {e}", exc_info=True)
         raise

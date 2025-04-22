@@ -28,12 +28,12 @@ async def retrieve_relevant_chunks(
         
         # Ensure the Chunk table exists with the correct schema
         logger.debug("Ensuring Chunk table exists with embedding array")
-        db.execute("""
-    CREATE NODE TABLE IF NOT EXISTS Chunk (
+        db.execute(f"""
+    CREATE NODE TABLE IF NOT EXISTS {CHUNK_TABLE} (
         chunk_id STRING,
         doc_id STRING,
         text STRING,
-        embedding FLOAT[768],
+        embedding FLOAT[{settings.VECTOR_DIMENSION}],
         created_at STRING,
         PRIMARY KEY (chunk_id)
     )

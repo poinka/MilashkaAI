@@ -168,36 +168,28 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Document List Handling ---
     async function loadDocumentList() {
         if (!docList) return;
-    
-        try {
-            const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
-            
-            console.log('LIST_DOCUMENTS response:', response); // Debug log
-    
-            if (response === undefined || response === null) {
-                showError('Failed to load documents: No response from background script');
-                console.error('No response received from background script');
-                docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
-                return;
-            }
-    
-            if (response.success && Array.isArray(response.documents)) {
-                renderDocumentList(response.documents);
-            } else {
-                const errorMsg = response.error || 
-                    (!response.success ? 'Request failed' : 
-                    'Missing or invalid documents array');
-                showError(`Failed to load documents: ${errorMsg}`);
-                console.error('Invalid response:', response);
-                docList.innerHTML = '<li class="no-documents">Failed to load documents</li>';
-            }
-        } catch (error) {
-            showError('Error loading documents: ' + error.message);
-            console.error('Load documents error:', error);
+
+    try {
+        const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
+        
+        console.log('LIST_DOCUMENTS response:', response);
+
+        // Check if response is a plain list
+        const documents = Array.isArray(response) ? response : response.documents;
+
+        if (Array.isArray(documents)) {
+            renderDocumentList(documents);
+        } else {
+            showError('Failed to load documents: Invalid documents array');
+            console.error('Invalid documents array:', documents);
             docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
         }
+    } catch (error) {
+        showError('Error loading documents: ' + error.message);
+        console.error('Load documents error:', error);
+        docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
     }
-
+}
     function renderDocumentList(documents) {
         if (!Array.isArray(documents)) {
             console.error('Invalid documents data:', documents);
