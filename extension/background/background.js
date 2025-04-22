@@ -259,8 +259,6 @@ class BackgroundService {
             throw new Error('File data must be an array of bytes');
         }
         const uint8Array = new Uint8Array(request.fileData);
-        console.log('Received fileData sample:', uint8Array.slice(0, 10));
-        console.log('Filename:', request.filename, 'Filetype:', request.filetype);
         const formData = new FormData();
         const blob = new Blob([uint8Array], { type: request.filetype });
         formData.append('file', blob, request.filename);

@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const uint8Array = new Uint8Array(e.target.result);
-                console.log('Sending file data:', uint8Array.slice(0, 10));
+
                 try {
                     const response = await chrome.runtime.sendMessage({
                         type: "UPLOAD_DOCUMENT",
@@ -162,7 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
             reader.readAsArrayBuffer(file);
         });
     }
-    
+
     function updateProgress(percent) {
         progressBar.style.width = `${percent}%`;
         progressText.textContent = `${Math.round(percent)}%`;
