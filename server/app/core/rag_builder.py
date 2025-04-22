@@ -116,7 +116,7 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
             chunk_id STRING,
             doc_id STRING,
             text STRING,
-            embedding VECTOR[{settings.VECTOR_DIMENSION}],
+            embedding FLOAT[{settings.VECTOR_DIMENSION}],
             PRIMARY KEY (chunk_id)
         )
         """
