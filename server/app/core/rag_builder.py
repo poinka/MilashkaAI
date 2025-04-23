@@ -135,14 +135,25 @@ async def build_rag_graph_from_text(
         requirements = []
         entities = []
         doc = nlp(text)
+        keywords = ["require", "must", "shall", "need", "should", "obligate", "have to"]
         for sent in doc.sents:
-            if any(token.lemma_ in ["require", "must", "shall"] for token in sent):
+            logging.info(f"Processing sentence: {sent.text}")
+            if any(token.lemma_.lower() in keywords for token in sent):
+                logging.info(f"Detected requirement: {sent.text}")
                 req_id = f"req_{doc_id}_{len(requirements)}"
-                req_type = "functional" if "function" in sent.text.lower() else "non-functional"
-                requirements.append({"req_id": req_id, "type": req_type, "description": sent.text})
+                req_type = "functional" if any(term in sent.text.lower() for term in ["function", "feature", "capability"]) else "non-functional"
+                requirements.append({"req_id": req_id, "type": req_type, "description": sent.text.strip()})
+            else:
+                logging.debug(f"No requirement detected in sentence: {sent.text}")
             for ent in sent.ents:
-                entities.append({"entity_id": f"ent_{doc_id}_{len(entities)}",
-                               "type": ent.label_.lower(), "name": ent.text})
+                entities.append({
+                    "entity_id": f"ent_{doc_id}_{len(entities)}",
+                    "type": ent.label_.lower(),
+                    "name": ent.text
+                })
+        logging.info(f"Extracted {len(requirements)} requirements")
+
+        # Insert chunks and relationships
         for i, (chunked_text, embedding) in enumerate(zip(text_chunks, embeddings)):
             chunk_id = f"{doc_id}_chunk_{i}"
             conn.execute(f"""

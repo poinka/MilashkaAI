@@ -125,64 +125,75 @@ async def perform_text_edit(
     """
     Performs text editing using the LLM, potentially incorporating RAG context.
     """
-    llm = get_llm()
-    if not llm:
-        raise HTTPException(status_code=503, detail="LLM not available")
+    # llm = get_llm()
+    # if not llm:
+    #     raise HTTPException(status_code=503, detail="LLM not available")
 
-    # Construct the prompt for the LLM
-    system_prompt = f"""You are an expert text editor. Edit the following text in {language} based ONLY on the user's request. Preserve the original meaning and tone unless requested otherwise. Output ONLY the edited text, without explanations or apologies."""
+    # # Construct the prompt for the LLM
+    # system_prompt = f"""You are an expert text editor. Edit the following text in {language} based ONLY on the user's request. Preserve the original meaning and tone unless requested otherwise. Output ONLY the edited text, without explanations or apologies."""
     
-    user_prompt_parts = [
-        f"Original text: \"{selected_text}\"",
-        f"Edit request: \"{prompt}\""
-    ]
+    # user_prompt_parts = [
+    #     f"Original text: \"{selected_text}\"",
+    #     f"Edit request: \"{prompt}\""
+    # ]
     
-    # Add context if available
-    if context_text:
-        # Ensure context doesn't make the prompt too long (approximate check)
-        max_context_len = settings.MAX_INPUT_LENGTH - (len(system_prompt) + len(selected_text) + len(prompt) + 100) 
-        truncated_context = context_text[:max_context_len]
-        user_prompt_parts.insert(0, f"Relevant context from document:\n{truncated_context}\n---")
+    # # Add context if available
+    # if context_text:
+    #     # Ensure context doesn't make the prompt too long (approximate check)
+    #     max_context_len = settings.MAX_INPUT_LENGTH - (len(system_prompt) + len(selected_text) + len(prompt) + 100) 
+    #     truncated_context = context_text[:max_context_len]
+    #     user_prompt_parts.insert(0, f"Relevant context from document:\n{truncated_context}\n---")
         
-    full_user_prompt = "\n".join(user_prompt_parts)
+    # full_user_prompt = "\n".join(user_prompt_parts)
 
-    # Use the chat template structure expected by the model
-    chat_prompt = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": full_user_prompt}
-    ]
+    # # Use the chat template structure expected by the model
+    # chat_prompt = [
+    #     {"role": "system", "content": system_prompt},
+    #     {"role": "user", "content": full_user_prompt}
+    # ]
 
-    try:
-        # Generate the edited text
-        # Add a fallback value in case settings.MAX_OUTPUT_LENGTH is not accessible
-        max_tokens = getattr(settings, 'MAX_OUTPUT_LENGTH', 512)
-        response = llm.create_chat_completion(
-            messages=chat_prompt,
-            max_tokens=max_tokens,
-            temperature=0.5, # Adjust temperature for creativity vs faithfulness
-            stop=["<end_of_turn>"] # Ensure model stops appropriately
-        )
+    # try:
+    #     # Generate the edited text
+    #     # Add a fallback value in case settings.MAX_OUTPUT_LENGTH is not accessible
+    #     max_tokens = getattr(settings, 'MAX_OUTPUT_LENGTH', 512)
+    #     response = llm.create_chat_completion(
+    #         messages=chat_prompt,
+    #         max_tokens=max_tokens,
+    #         temperature=0.5, # Adjust temperature for creativity vs faithfulness
+    #         stop=["<end_of_turn>"] # Ensure model stops appropriately
+    #     )
         
-        edited_text = response['choices'][0]['message']['content'].strip()
+    #     edited_text = response['choices'][0]['message']['content'].strip()
         
-        # Basic check if the model refused or produced empty output
-        if not edited_text or "cannot fulfill" in edited_text.lower() or len(edited_text) < 2:
-             edited_text = selected_text # Fallback to original if edit failed
-             confidence = 0.2
-             warning = "LLM could not perform the requested edit."
-        else:
-            # We're not evaluating quality anymore - always report high confidence
-            confidence = 1.0
-            warning = None
-            # Removed confidence threshold warning
+    #     # Basic check if the model refused or produced empty output
+    #     if not edited_text or "cannot fulfill" in edited_text.lower() or len(edited_text) < 2:
+    #          edited_text = selected_text # Fallback to original if edit failed
+    #          confidence = 0.2
+    #          warning = "LLM could not perform the requested edit."
+    #     else:
+    #         # We're not evaluating quality anymore - always report high confidence
+    #         confidence = 1.0
+    #         warning = None
+    #         # Removed confidence threshold warning
 
-        return {
-            "edited_text": edited_text,
-            "confidence": confidence,
-            "alternatives": [], # Placeholder for potential future alternatives
-            "warning": warning
-        }
+    #     return {
+    #         "edited_text": edited_text,
+    #         "confidence": confidence,
+    #         "alternatives": [], # Placeholder for potential future alternatives
+    #         "warning": warning
+    #     }
 
-    except Exception as e:
-        logging.error(f"Error during text editing with LLM: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Text editing failed: {str(e)}")
+    # except Exception as e:
+    #     logging.error(f"Error during text editing with LLM: {e}", exc_info=True)
+    #     raise HTTPException(status_code=500, detail=f"Text editing failed: {str(e)}")
+    logging.info("Starting text edit process")
+    # Simulate a response without calling LLM
+    edited_text = f"Edited: {selected_text} based on {prompt}"
+    confidence = 1.0
+    warning = None
+    return {
+        "edited_text": edited_text,
+        "confidence": confidence,
+        "alternatives": [],
+        "warning": warning
+    }
