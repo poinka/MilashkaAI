@@ -1,5 +1,8 @@
 import logging
 import sys
+import faulthandler; 
+
+faulthandler.enable()
 
 # Configure logging at the start of the file
 logging.basicConfig(
@@ -48,13 +51,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(documents.router, prefix="/api/v1/documents", tags=["Documents"])
-app.include_router(completion.router, prefix="/api/v1/completion", tags=["Completion"])
-app.include_router(voice.router, prefix="/api/v1/voice", tags=["Voice"])
-app.include_router(editing.router, prefix="/api/v1/editing", tags=["Editing"])
-app.include_router(rag.router, prefix="/api/v1/rag", tags=["RAG"])
-app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
+# Register routers
+app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
+app.include_router(completion.router, prefix="/api/v1/completion", tags=["completion"])
+app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"])
+app.include_router(editing.router, prefix="/api/v1/editing", tags=["editing"])
+app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["feedback"])
 
 @app.get("/")
 async def read_root():

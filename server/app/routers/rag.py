@@ -5,7 +5,7 @@ import asyncio
 from app.core.config import settings
 from app.core.rag_retriever import retrieve_relevant_chunks
 from app.core.rag_builder import reindex_document
-from app.db.kuzudb_client import get_db_connection
+from app.db.kuzudb_client import get_db, KuzuDBClient
 
 router = APIRouter()
 
@@ -19,14 +19,14 @@ async def search_documents(
         default=settings.RAG_SIMILARITY_THRESHOLD,
         ge=0.0,
         le=1.0
-    )
+    ),
+    db: KuzuDBClient = Depends(get_db)
 ):
     """
     Search through indexed documents using vector similarity.
     Optionally filter by document ID and adjust similarity threshold.
     """
     try:
-        db = get_db_connection()
         results = await retrieve_relevant_chunks(
             query,
             top_k,
@@ -51,12 +51,11 @@ async def search_documents(
 
 @router.post("/reindex/{doc_id}",
     summary="Reindex a specific document")
-async def reindex_doc(doc_id: str):
+async def reindex_doc(doc_id: str, db: KuzuDBClient = Depends(get_db)):
     """
     Reindex a specific document to update its vectors and chunks.
     """
     try:
-        db = get_db_connection()
         result = await reindex_document(doc_id, db)
         return {
             "success": True,
@@ -75,14 +74,14 @@ async def reindex_doc(doc_id: str):
 async def find_similar(
     text: str,
     top_k: int = Query(default=5, le=20),
-    exclude_doc_id: Optional[str] = None
+    exclude_doc_id: Optional[str] = None,
+    db: KuzuDBClient = Depends(get_db)
 ):
     """
     Find similar text chunks across all indexed documents.
     Optionally exclude a specific document.
     """
     try:
-        db = get_db_connection()
         results = await retrieve_relevant_chunks(
             text,
             top_k,
@@ -105,14 +104,13 @@ async def find_similar(
 @router.post("/refresh-embeddings",
     summary="Refresh embeddings for all documents")
 async def refresh_embeddings(
-    batch_size: int = Query(default=10, le=50)
+    batch_size: int = Query(default=10, le=50), db: KuzuDBClient = Depends(get_db)
 ):
     """
     Refresh embeddings for all indexed documents.
     Uses batching to handle large collections efficiently.
     """
     try:
-        db = get_db_connection()
         stats = {
             "documents_processed": 0,
             "chunks_updated": 0,

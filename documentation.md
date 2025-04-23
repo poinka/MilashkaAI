@@ -37,4 +37,5 @@ docker-compose build server
 docker-compose up
 
 Чтобы посмотреть логи сервера:
+docker-compose restart server
 docker-compose logs -f server

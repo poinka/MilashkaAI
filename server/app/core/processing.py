@@ -1,9 +1,9 @@
 import io
-from fastapi import UploadFile, HTTPException
+from fastapi import UploadFile, HTTPException, Depends
+from app.db.kuzudb_client import get_db, KuzuDBClient
+from app.core.rag_builder import build_rag_graph_from_text
 import logging
 from datetime import datetime
-from app.db.kuzudb_client import get_db_connection
-from app.core.rag_builder import build_rag_graph_from_text
 
 try:
     import pypdf
@@ -87,14 +87,13 @@ async def extract_text_from_file(file: UploadFile) -> str:
             raise e
         raise HTTPException(status_code=500, detail=f"Error processing file: {e}")
 
-async def process_uploaded_document(doc_id: str, file: UploadFile):
+async def process_uploaded_document(doc_id: str, file: UploadFile, db: KuzuDBClient = Depends(get_db)):
     logging.info(f"Processing document ID: {doc_id}, Filename: {file.filename}")
-    db = get_db_connection()
 
     # Ensure Document and Chunk tables exist
     try:
-        db.execute("""
-            CREATE NODE TABLE IF NOT EXISTS Document (
+        db.execute(
+            """CREATE NODE TABLE IF NOT EXISTS Document (
                 doc_id STRING,
                 filename STRING,
                 processed_at STRING,
@@ -102,18 +101,17 @@ async def process_uploaded_document(doc_id: str, file: UploadFile):
                 created_at STRING,
                 updated_at STRING,
                 PRIMARY KEY (doc_id)
-            )
-        """)
-        db.execute("""
-            CREATE NODE TABLE IF NOT EXISTS Chunk (
+            )"""
+        )
+        db.execute(
+            """CREATE NODE TABLE IF NOT EXISTS Chunk (
                 chunk_id STRING,
                 doc_id STRING,
                 text STRING,
-                embedding VECTOR[768],
-                created_at STRING,
+                embedding FLOAT[],
                 PRIMARY KEY (chunk_id)
-            )
-        """)
+            )"""
+        )
     except Exception as e:
         logging.error(f"Failed to ensure tables: {e}")
         raise HTTPException(status_code=500, detail="Database schema error")

@@ -162,19 +162,27 @@ class BackgroundService {
         try {
             const apiUrl = await this.getApiUrl();
             const url = `${apiUrl}/completion/stream`;
+            console.log(`[MilashkaAI] Starting streaming completion`);
             
-            console.log(`Starting streaming completion from ${url}`);
-            
-            // Initialize SSE connection
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            let timeoutId = null;
+            
+            // Create an auto-reset timeout
+            const resetTimeout = () => {
+                if (timeoutId) clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => {
+                    console.log('[MilashkaAI] Stream timeout');
+                    controller.abort();
+                }, 5000); // 5 second timeout if no tokens received
+            };
             
             const response = await fetch(url, {
                 method: 'POST',
                 signal: controller.signal,
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Client-Version': chrome.runtime.getManifest().version
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive'
                 },
                 body: JSON.stringify({
                     current_text: request.current_text,
@@ -187,7 +195,6 @@ class BackgroundService {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            // Setup streaming
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullSuggestion = '';
@@ -198,57 +205,52 @@ class BackgroundService {
                 responseReader: reader,
                 readNextChunk: async () => {
                     try {
+                        resetTimeout(); // Reset timeout on each chunk read attempt
                         const { value, done } = await reader.read();
                         
                         if (done) {
-                            clearTimeout(timeoutId);
+                            if (timeoutId) clearTimeout(timeoutId);
                             return { done: true };
                         }
-                        
+
                         const chunk = decoder.decode(value, { stream: true });
                         buffer += chunk;
                         
-                        // Process complete SSE messages
                         const messages = [];
                         const lines = buffer.split('\n\n');
-                        
-                        // Process all complete messages
-                        buffer = lines.pop() || ''; // Keep the last incomplete part in buffer
+                        buffer = lines.pop() || '';
                         
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
-                                try {
-                                    const data = JSON.parse(line.substring(6));
-                                    if (data.token) {
-                                        fullSuggestion += data.token;
-                                        messages.push({
-                                            token: data.token,
-                                            suggestion: fullSuggestion
-                                        });
-                                    }
-                                    if (data.done) {
-                                        messages.push({ done: true });
-                                    }
-                                } catch (e) {
-                                    console.error('Error parsing SSE data:', e);
+                                const token = line.slice(6);
+                                if (token) {
+                                    fullSuggestion += token;
+                                    messages.push({
+                                        token,
+                                        suggestion: fullSuggestion
+                                    });
                                 }
                             }
                         }
                         
                         return { messages, done: false };
                     } catch (error) {
-                        clearTimeout(timeoutId);
-                        reader.cancel();
+                        if (timeoutId) clearTimeout(timeoutId);
+                        if (error.name === 'AbortError') {
+                            console.log('[MilashkaAI] Stream aborted');
+                            return { done: true };
+                        }
                         throw error;
                     }
                 },
                 cancel: () => {
-                    clearTimeout(timeoutId);
+                    if (timeoutId) clearTimeout(timeoutId);
+                    controller.abort();
                     reader.cancel();
                 }
             };
         } catch (error) {
-            console.error('Streaming completion error:', error);
+            console.error('[MilashkaAI] Stream error:', error);
             throw error;
         }
     }
@@ -308,16 +310,16 @@ class BackgroundService {
                 method: 'GET'
             });
             console.log('Raw server response (list):', documentsList);
-            
+
             // Validate if the response is actually an array
             if (!Array.isArray(documentsList)) {
                 // Log the unexpected response for debugging
                 console.error('Invalid response format: expected an array, received:', documentsList);
                 throw new Error('Invalid response format: expected an array of documents');
             }
-            
+
             console.log('Processed documents:', documentsList);
-            
+
             // Return the expected structure
             return {
                 success: true,
@@ -380,6 +382,26 @@ class BackgroundService {
 
         connection.recorder.start(1000);
         return { success: true };
+    }
+
+    async handleTrackSuggestion(request) {
+        try {
+            await this.fetchAPI('/feedback/track-suggestion', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    suggestion_text: request.suggestion_text,
+                    document_context: request.document_context,
+                    was_accepted: request.was_accepted,
+                    source: request.source || 'completion',
+                    language: request.language || 'ru'
+                })
+            });
+            return { success: true };
+        } catch (error) {
+            console.error('Failed to track suggestion:', error);
+            return { success: false, error: error.message };
+        }
     }
 
     handleStopVoice(tabId) {

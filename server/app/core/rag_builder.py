@@ -6,9 +6,11 @@ import numpy as np
 from kuzu import Database
 from app.core.models import get_embedding_pipeline
 from app.core.config import settings
-from app.db.kuzudb_client import get_db_connection
+from app.db.kuzudb_client import get_db, KuzuDBClient
+from fastapi import Depends, HTTPException
 import asyncio
 from datetime import datetime
+import os
 
 # Constants for schema
 DOCUMENT_TABLE = "Document"
@@ -98,14 +100,23 @@ def chunk_text(text: str, strategy: str = "paragraph", max_chunk_size: int = 512
     logging.info(f"Filtered chunks (min length): {len(final_chunks)} chunks.")
     return final_chunks
 
-async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
+async def build_rag_graph_from_text(
+    doc_id: str,
+    filename: str,
+    text: str,
+    db: KuzuDBClient = None
+):
     logging.info(f"Starting RAG graph build for doc_id: {doc_id}")
-    
     try:
-        conn = get_db_connection()
+        if db is None:
+            db = KuzuDBClient(settings.KUZUDB_PATH)
+            db.connect()
+            close_db = True
+        else:
+            close_db = False
+        conn = db
         embedding_pipeline = get_embedding_pipeline()
-        
-        # Existing schema creation (Document, Chunk, Contains)
+        # Table DDLs
         create_document_table = f"""
         CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
             doc_id STRING, filename STRING, processed_at STRING, status STRING,
@@ -116,16 +127,13 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
             chunk_id STRING,
             doc_id STRING,
             text STRING,
-            embedding FLOAT[{settings.VECTOR_DIMENSION}],
+            embedding FLOAT[],
             PRIMARY KEY (chunk_id)
-        )
-        """
+        )"""
         create_contains_rel = f"""
         CREATE REL TABLE IF NOT EXISTS {CONTAINS_RELATIONSHIP} (
             FROM {DOCUMENT_TABLE} TO {CHUNK_TABLE}
         )"""
-        
-        # New schema for requirements and entities
         create_requirement_table = """
         CREATE NODE TABLE IF NOT EXISTS Requirement (
             req_id STRING, type STRING, description STRING, created_at STRING,
@@ -147,13 +155,10 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
         CREATE REL TABLE IF NOT EXISTS References (
             FROM Requirement TO Document
         )"""
-        
         for query in [create_document_table, create_chunk_table, create_contains_rel,
                       create_requirement_table, create_entity_table,
                       create_implements_rel, create_described_by_rel, create_references_rel]:
             conn.execute(query)
-        
-        # Insert document node
         now = datetime.now().isoformat()
         conn.execute(f"""
             CREATE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id, filename: $filename,
@@ -163,12 +168,8 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
             "doc_id": doc_id, "filename": filename, "processed_at": now,
             "status": "indexed", "created_at": now, "updated_at": now
         })
-        
-        # Chunk text and generate embeddings
         text_chunks = chunk_text(text)
         embeddings = embedding_pipeline.encode(text_chunks, batch_size=32)
-        
-        # Extract requirements (simplified example using SpaCy)
         requirements = []
         entities = []
         doc = nlp(text)
@@ -180,8 +181,6 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
             for ent in sent.ents:
                 entities.append({"entity_id": f"ent_{doc_id}_{len(entities)}",
                                "type": ent.label_.lower(), "name": ent.text})
-        
-        # Insert chunks and relationships
         for i, (chunked_text, embedding) in enumerate(zip(text_chunks, embeddings)):
             chunk_id = f"{doc_id}_chunk_{i}"
             conn.execute(f"""
@@ -196,8 +195,6 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
                       (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
                 CREATE (d)-[:{CONTAINS_RELATIONSHIP}]->(c)
             """, {"doc_id": doc_id, "chunk_id": chunk_id})
-            
-            # Link requirements to chunks (if chunk contains requirement text)
             for req in requirements:
                 if req["description"] in chunked_text:
                     conn.execute("""
@@ -205,8 +202,6 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
                               (c:Chunk {chunk_id: $chunk_id})
                         CREATE (r)-[:DescribedBy]->(c)
                     """, {"req_id": req["req_id"], "chunk_id": chunk_id})
-        
-        # Insert requirements
         for req in requirements:
             conn.execute("""
                 CREATE (r:Requirement {req_id: $req_id, type: $type,
@@ -215,21 +210,17 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
                 "req_id": req["req_id"], "type": req["type"],
                 "description": req["description"], "created_at": now
             })
-            # Link requirement to document
             conn.execute("""
                 MATCH (r:Requirement {req_id: $req_id}),
                       (d:Document {doc_id: $doc_id})
                 CREATE (r)-[:References]->(d)
             """, {"req_id": req["req_id"], "doc_id": doc_id})
-        
-        # Insert entities
         for ent in entities:
             conn.execute("""
                 CREATE (e:Entity {entity_id: $entity_id, type: $type, name: $name})
             """, {
                 "entity_id": ent["entity_id"], "type": ent["type"], "name": ent["name"]
             })
-            # Link requirements to entities (simplified: link if entity mentioned in requirement)
             for req in requirements:
                 if ent["name"].lower() in req["description"].lower():
                     conn.execute("""
@@ -237,24 +228,27 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str):
                               (e:Entity {entity_id: $entity_id})
                         CREATE (r)-[:Implements]->(e)
                     """, {"req_id": req["req_id"], "entity_id": ent["entity_id"]})
-        
         logging.info(f"Built RAG graph with {len(requirements)} requirements for doc_id: {doc_id}")
-        
     except Exception as e:
         logging.error(f"Error building RAG graph: {e}", exc_info=True)
         raise
+    finally:
+        if 'close_db' in locals() and close_db:
+            db.close()
 
-async def reindex_document(doc_id: str, conn=None):
+async def reindex_document(
+    doc_id: str,
+    db: KuzuDBClient = Depends(get_db)
+):
     """
     Reindex a specific document: re-extracts text and updates KuzuDB graph.
     """
     from app.core.processing import extract_text_from_file
 
-    if conn is None:
-        conn = get_db_connection()
+    conn = db
 
     # Find the uploaded file
-    uploads_dir = os.getenv("UPLOADS_DIR", "/uploads")
+    uploads_dir = os.getenv("UPLOADS_DIR", settings.UPLOADS_PATH)
     file_path = os.path.join(uploads_dir, f"{doc_id}")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"File for doc_id {doc_id} not found.")

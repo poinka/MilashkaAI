@@ -1,45 +1,44 @@
-import logging
-import os
-from datetime import datetime
-from kuzu import Database, Connection
-from app.core.models import get_embedding_pipeline
-from app.core.config import settings
+from kuzu import Database as KuzuDB, Connection
 
-# Constants for schema
-DOCUMENT_TABLE = "Document"
-CHUNK_TABLE = "Chunk"
-CONTAINS_RELATIONSHIP = "Contains"
-
-# Global database connection
-kuzu_db = None
-kuzu_conn = None
-
-def get_db_connection() -> Connection:
-    """Returns a KuzuDB Connection object, reusing existing connection if available."""
-    global kuzu_db, kuzu_conn
-    
-    if kuzu_conn is not None:
-        return kuzu_conn
-        
+def get_db():
+    """FastAPI dependency that yields a KuzuDBClient (with .execute())."""
+    client = KuzuDBClient("/data/kuzu_db")
     try:
-        # Use the path defined in settings
-        db_path = settings.KUZUDB_PATH
-        os.makedirs(db_path, exist_ok=True)
-        
-        logging.info(f"Connecting to KuzuDB at: {db_path}")
-        kuzu_db = Database(db_path)
-        kuzu_conn = Connection(kuzu_db)
-        return kuzu_conn
-    except Exception as e:
-        logging.error(f"Failed to establish KuzuDB connection: {e}")
-        raise
+        client.connect()
+        yield client
+    finally:
+        client.close()
 
+# Maintain backward compatibility
+get_db_connection = get_db
 
 def close_db_connection():
-    """Close KuzuDB connection."""
-    global kuzu_db, kuzu_conn
-    if kuzu_conn:
-        kuzu_conn = None
-    if kuzu_db:
-        kuzu_db = None
-        logging.info("KuzuDB connection closed")
+    """Close database connection (no-op for per-request dependency)."""
+    pass
+
+class KuzuDBClient:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.kuzu_db: KuzuDB | None = None
+        self.conn: Connection | None = None
+
+    def connect(self):
+        """Connect to the KuzuDB database."""
+        if not self.kuzu_db:
+            self.kuzu_db = KuzuDB(self.db_path)
+            self.conn = Connection(self.kuzu_db)
+
+    def close(self):
+        """Close the connection (and drop DB handle)."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+        self.kuzu_db = None
+
+    def execute(self, query: str, params: dict | None = None):
+        """Run a query via the Connection."""
+        if not self.conn:
+            self.connect()
+        if params is not None:
+            return self.conn.execute(query, params)
+        return self.conn.execute(query)

@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.schemas.models import DocumentMetadata
 from app.schemas.errors import ErrorResponse
 from app.core.rag_builder import build_rag_graph_from_text 
-from app.db.kuzudb_client import get_db_connection
+from app.db.kuzudb_client import get_db_connection, KuzuDBClient
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -98,11 +98,10 @@ async def upload_document(
 @router.get("/",
     response_model=List[DocumentMetadata], # Correct response model
     summary="List all uploaded documents")
-def list_documents():
+def list_documents(db: KuzuDBClient = Depends(get_db_connection)):
     """Retrieves metadata for all processed documents."""
     try:
-        db = get_db_connection()
-        # Query KùzuDB for Document nodes, including processed_at
+# Query KùzuDB for Document nodes, including processed_at
         query = """ 
             MATCH (d:Document) 
             RETURN d.doc_id, d.filename, d.status, d.created_at, d.updated_at, d.processed_at
@@ -175,10 +174,13 @@ def list_documents():
 @router.get("/{doc_id}", 
     response_model=DocumentMetadata,
     summary="Get document status")
-async def get_document_status(doc_id: str):
+async def get_document_status(
+    doc_id: str,
+    db: KuzuDBClient = Depends(get_db_connection)
+):
     try:
-        conn = get_db_connection()
-        
+        conn = db
+         
         result = conn.execute("""
             MATCH (d:Document {doc_id: $doc_id})
             RETURN d.doc_id, d.filename, d.updated_at, d.status, d.created_at, d.updated_at
@@ -249,20 +251,22 @@ async def get_document_status(doc_id: str):
         )
 
 @router.delete("/{doc_id}",
-    # Return a simple success message or status code instead of full metadata
-    status_code=204, # No Content is typical for successful DELETE
+    status_code=204,
     summary="Delete a document and its associated data")
-async def delete_document(doc_id: str):
+async def delete_document(
+    doc_id: str,
+    db: KuzuDBClient = Depends(get_db_connection)
+):
     """Deletes a document node, its chunks, and the original file."""
     try:
-        conn = get_db_connection()
-        
+        conn = db
+         
         # 1. Get the filename *before* deleting the node
         filename_result = conn.execute(
             "MATCH (d:Document {doc_id: $doc_id}) RETURN d.filename",
             {"doc_id": doc_id}
         )
-        
+         
         original_filename = None
         if filename_result.has_next():
             original_filename = filename_result.get_next()[0]
@@ -272,9 +276,9 @@ async def delete_document(doc_id: str):
 
         # 2. Delete the document and associated chunks from the database
         conn.execute("""
-            MATCH (d:Document {doc_id: $doc_id})
-            OPTIONAL MATCH (d)-[:Contains]->(c:Chunk)
-            DETACH DELETE d, c
+             MATCH (d:Document {doc_id: $doc_id})
+             OPTIONAL MATCH (d)-[:Contains]->(c:Chunk)
+             DETACH DELETE d, c
         """, {"doc_id": doc_id})
         logger.info(f"Deleted document node {doc_id} and associated chunks from KuzuDB.")
 
@@ -284,18 +288,18 @@ async def delete_document(doc_id: str):
             ext = os.path.splitext(original_filename)[1]
             unique_filename = f"{doc_id}{ext}"
             file_path = os.path.join(settings.UPLOADS_PATH, unique_filename)
-            
+             
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)
                     logger.info(f"Deleted file from disk: {file_path}")
                 except OSError as e:
                     logger.error(f"Error deleting file {file_path}: {e}", exc_info=True)
-                    # Log the error, the main goal (DB removal) is done.
+                     # Log the error, the main goal (DB removal) is done.
             else:
                 logger.warning(f"File not found on disk for deletion: {file_path}")
         else:
-             logger.warning(f"Could not determine filename for doc_id {doc_id} to delete from disk.")
+            logger.warning(f"Could not determine filename for doc_id {doc_id} to delete from disk.")
 
         # Return No Content on success
         return None 

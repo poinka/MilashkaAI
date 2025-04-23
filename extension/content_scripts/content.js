@@ -1,5 +1,34 @@
 console.log("MilashkaAI content script loaded.");
 
+// default API URL in case storage hasn't loaded yet
+window.MILASHKA_API_URL = 'http://localhost:8000/api/v1';
+
+function showContextInvalidatedError() {
+    // Remove any existing error notification first
+    const existing = document.getElementById('milashka-context-error');
+    if (existing) existing.remove();
+    
+    const errorBar = document.createElement('div');
+    errorBar.id = 'milashka-context-error';
+    Object.assign(errorBar.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        backgroundColor: '#f44336',
+        color: 'white',
+        padding: '12px',
+        textAlign: 'center',
+        zIndex: '999999',
+        cursor: 'pointer',
+        fontFamily: 'system-ui'
+    });
+    
+    errorBar.textContent = 'Extension needs to be reloaded. Click here to refresh the page';
+    errorBar.onclick = () => window.location.reload();
+    document.body.appendChild(errorBar);
+}
+
 class SuggestionManager {
     constructor() {
         this.currentSuggestion = null;
@@ -7,108 +36,158 @@ class SuggestionManager {
         this.activeInputElement = null;
         this.debounceTimer = null;
         this.DEBOUNCE_DELAY = 500;
-        this.setupMutationObserver();
+        this.lastUpdate = 0;
+        this.updateThrottle = 500; // ms
+        this.abortController = null;
+        this.currentRequestId = 0;
+        this.streamInProgress = false;
+        // Bind methods to ensure correct 'this' context
+        this.displaySuggestion = this.displaySuggestion.bind(this);
+        this.cancelStream = this.cancelStream.bind(this);
     }
 
-    setupMutationObserver() {
-        const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-                if (mutation.type === 'childList') {
-                    this.updateSuggestionPosition();
-                }
-            });
+    showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        Object.assign(toast.style, {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            background: type === 'error' ? '#f44336' : '#4CAF50',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: '4px',
+            zIndex: 10000,
+            opacity: 0,
+            transition: 'opacity 0.3s'
         });
-
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        // Trigger animation
+        setTimeout(() => toast.style.opacity = '1', 10);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
     }
 
-    getCaretCoordinates(element, position) {
-        const tempSpan = document.createElement('span');
-        tempSpan.style.position = 'absolute';
-        tempSpan.style.visibility = 'hidden';
-        tempSpan.style.whiteSpace = 'pre';
-        tempSpan.style.font = window.getComputedStyle(element).font;
+    cancelStream() {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+            this.showToast('Completion cancelled');
+        }
+        if (this.debounceTimer) {
+            clearTimeout(this.debounceTimer);
+            this.debounceTimer = null;
+        }
+        this.currentRequestId++;
+        this.streamInProgress = false;
+        this.clearSuggestion();
+    }
 
-        const textBeforeCaret = element.value.substring(0, position);
-        tempSpan.textContent = textBeforeCaret;
-        document.body.appendChild(tempSpan);
-
-        const rect = element.getBoundingClientRect();
-        const spanRect = tempSpan.getBoundingClientRect();
-
-        document.body.removeChild(tempSpan);
-
-        const lineHeight = parseInt(window.getComputedStyle(element).lineHeight);
-        const lines = textBeforeCaret.split('\n');
-        const currentLine = lines[lines.length - 1];
-        const verticalOffset = (lines.length - 1) * lineHeight;
-
-        return {
-            left: rect.left + spanRect.width % rect.width,
-            top: rect.top + verticalOffset
-        };
+    ensureOverlay(element) {
+        // Only wrap once
+        if (element.parentNode && element.parentNode.classList && element.parentNode.classList.contains('milashka-input-wrapper')) {
+            console.log('[MilashkaAI] ensureOverlay: already wrapped');
+            return element.parentNode;
+        }
+        // Remove any old wrapper (if present)
+        if (element.parentNode && element.parentNode.classList && element.parentNode.classList.contains('milashka-old-wrapper')) {
+            const oldWrapper = element.parentNode;
+            oldWrapper.parentNode.insertBefore(element, oldWrapper);
+            oldWrapper.remove();
+        }
+        // Create wrapper
+        try {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'milashka-input-wrapper';
+            wrapper.style.position = 'relative';
+            wrapper.style.display = 'inline-block';
+            wrapper.style.width = element.offsetWidth + 'px';
+            wrapper.style.height = element.offsetHeight + 'px';
+            element.parentNode.insertBefore(wrapper, element);
+            wrapper.appendChild(element);
+            console.log('[MilashkaAI] ensureOverlay: wrapper created');
+            return wrapper;
+        } catch (e) {
+            console.error('[MilashkaAI] ensureOverlay: failed to create overlay', e);
+            return null;
+        }
     }
 
     displaySuggestion(element, suggestionText) {
+        console.log('[MilashkaAI] displaySuggestion called', { element, suggestionText });
+        // Throttle updates
+        const now = Date.now();
+        if (now - this.lastUpdate < this.updateThrottle) return;
+        this.lastUpdate = now;
+
         if (!suggestionText) {
             this.clearSuggestion();
             return;
         }
-
         this.clearSuggestion();
-
         this.currentSuggestion = suggestionText;
         this.activeInputElement = element;
-
+        const wrapper = this.ensureOverlay(element);
+        if (!wrapper) {
+            console.error('[MilashkaAI] displaySuggestion: could not get wrapper for element', element);
+            return;
+        }
+        // Remove any old overlays
+        const oldOverlays = wrapper.querySelectorAll('.milashka-suggestion-overlay');
+        oldOverlays.forEach(node => node.remove());
+        // Create overlay if needed
         this.suggestionElement = document.createElement('div');
-        this.suggestionElement.textContent = suggestionText;
-        this.suggestionElement.className = 'milashka-suggestion';
+        this.suggestionElement.className = 'milashka-suggestion-overlay';
+        // Style to match input
+        const style = window.getComputedStyle(element);
         Object.assign(this.suggestionElement.style, {
             position: 'absolute',
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            borderRadius: '2px',
-            padding: '2px 4px',
-            color: '#666',
+            left: style.paddingLeft,
+            top: style.paddingTop,
+            color: '#999',
             pointerEvents: 'none',
-            zIndex: '999999',
+            font: style.font,
             whiteSpace: 'pre-wrap',
-            font: window.getComputedStyle(element).font
+            opacity: 0.7,
+            zIndex: 10,
+            width: '100%',
+            height: '100%',
+            overflow: 'hidden',
         });
-
-        document.body.appendChild(this.suggestionElement);
-        this.updateSuggestionPosition();
-
-        element.addEventListener('scroll', () => this.updateSuggestionPosition());
-        window.addEventListener('scroll', () => this.updateSuggestionPosition());
-        window.addEventListener('resize', () => this.updateSuggestionPosition());
+        // Show only the part after the user's input
+        const value = element.value;
+        let caretPos = element.selectionStart;
+        let before = value.substring(0, caretPos);
+        let after = suggestionText.substring(caretPos);
+        // Render ghost text after caret
+        this.suggestionElement.innerHTML =
+            `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span>${this.escapeHtml(after)}</span>`;
+        wrapper.appendChild(this.suggestionElement);
+        console.log('[MilashkaAI] displaySuggestion: overlay appended');
     }
 
-    updateSuggestionPosition() {
-        if (!this.suggestionElement || !this.activeInputElement) return;
-
-        const coords = this.getCaretCoordinates(
-            this.activeInputElement,
-            this.activeInputElement.selectionStart
-        );
-
-        const scrollX = window.scrollX || window.pageXOffset;
-        const scrollY = window.scrollY || window.pageYOffset;
-
-        Object.assign(this.suggestionElement.style, {
-            left: `${coords.left + scrollX}px`,
-            top: `${coords.top + scrollY}px`
+    escapeHtml(str) {
+        return str.replace(/[&<>"']/g, function(tag) {
+            const charsToReplace = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            };
+            return charsToReplace[tag] || tag;
         });
     }
 
     clearSuggestion() {
-        if (this.suggestionElement) {
-            this.suggestionElement.remove();
+        if (this.suggestionElement && this.suggestionElement.parentNode) {
+            this.suggestionElement.parentNode.removeChild(this.suggestionElement);
             this.suggestionElement = null;
         }
         this.currentSuggestion = null;
+        this.activeInputElement = null;
     }
 
     acceptSuggestion() {
@@ -116,40 +195,36 @@ class SuggestionManager {
             this.insertText(this.activeInputElement, this.currentSuggestion);
             this.trackSuggestionFeedback(true);
             this.clearSuggestion();
+            // After accepting, allow new completions
+            this.cancelStream();
             return true;
         }
         return false;
     }
-    
+
     trackSuggestionFeedback(wasAccepted) {
         if (!this.currentSuggestion) return;
-        
-        let context = '';
-        if (this.activeInputElement && this.activeInputElement.value) {
-            const start = Math.max(0, this.activeInputElement.selectionStart - 200);
-            const end = Math.min(this.activeInputElement.value.length, this.activeInputElement.selectionStart + 200);
-            context = this.activeInputElement.value.substring(start, end);
-        }
         
         chrome.runtime.sendMessage({
             type: "TRACK_SUGGESTION",
             suggestion_text: this.currentSuggestion,
-            document_context: context,
+            document_context: this.getContext(),
             was_accepted: wasAccepted,
             source: "completion",
             language: document.documentElement.lang || 'ru'
         }).catch(err => {
             console.error("Failed to track suggestion feedback:", err);
+            if (err.message.includes('Extension context invalidated')) {
+                showContextInvalidatedError();
+            }
         });
     }
 
-    insertText(element, textToInsert) {
-        const start = element.selectionStart;
-        const end = element.selectionEnd;
-        const originalText = element.value;
-        element.value = originalText.substring(0, start) + textToInsert + originalText.substring(end);
-        element.selectionStart = element.selectionEnd = start + textToInsert.length;
-        element.dispatchEvent(new Event('input', { bubbles: true }));
+    getContext() {
+        if (!this.activeInputElement || !this.activeInputElement.value) return '';
+        const start = Math.max(0, this.activeInputElement.selectionStart - 200);
+        const end = Math.min(this.activeInputElement.value.length, this.activeInputElement.selectionStart + 200);
+        return this.activeInputElement.value.substring(start, end);
     }
 }
 
@@ -440,7 +515,7 @@ class SpeechManager {
                 this.sendToServerForFormatting();
             }
         };
-        
+
         this.recognition.onresult = (event) => {
             this.interimTranscription = '';
             let finalTranscript = '';
@@ -452,7 +527,7 @@ class SpeechManager {
                     this.interimTranscription += event.results[i][0].transcript;
                 }
             }
-            
+
             if (finalTranscript) {
                 this.finalTranscription += ' ' + finalTranscript;
                 this.finalTranscription = this.finalTranscription.trim();
@@ -637,23 +712,96 @@ const suggestionManager = new SuggestionManager();
 const editingUI = new EditingUI();
 const speechManager = new SpeechManager();
 
+async function requestCompletion(text, element) {
+    try {
+        suggestionManager.cancelStream();
+        const requestId = ++suggestionManager.currentRequestId;
+        suggestionManager.abortController = new AbortController();
+        suggestionManager.streamInProgress = true;
+        const langCode = document.documentElement.lang && document.documentElement.lang.startsWith('en') ? 'en' : 'ru';
+        const apiUrl = window.MILASHKA_API_URL;
+        
+        const resp = await fetch(`${apiUrl}/completion/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ current_text: text, language: langCode }),
+            signal: suggestionManager.abortController.signal
+        });
+        
+        if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '', suggestion = text; // Start with current text
+        
+        while (true) {
+            if (requestId !== suggestionManager.currentRequestId || !document.hasFocus()) {
+                try { reader.cancel(); } catch (e) {}
+                break;
+            }
+            const { value, done } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() || '';
+            
+            for (const part of parts) {
+                if (part.startsWith('data: ')) {
+                    const token = part.slice(6);
+                    if (token && document.activeElement === element && 
+                        requestId === suggestionManager.currentRequestId) {
+                        // Show each token immediately
+                        suggestion += token;
+                        suggestionManager.displaySuggestion(element, suggestion);
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Completion error:', error);
+        if (error.message.includes('Extension context invalidated')) {
+            showContextInvalidatedError();
+            return;
+        }
+        suggestionManager.showToast('Failed to get completion', 'error');
+    } finally {
+        suggestionManager.abortController = null;
+        suggestionManager.streamInProgress = false;
+    }
+
+    // Fallback to non-streaming completion via background
+    const fallbackLang = langCode;
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: 'GET_COMPLETION',
+            current_text: text,
+            language: fallbackLang
+        });
+        if (response && response.success && response.suggestion) {
+            suggestionManager.displaySuggestion(element, response.suggestion);
+        }
+    } catch (error) {
+        console.error('Fallback completion failed:', error);
+    }
+}
+
 function handleInput(event) {
     const element = event.target;
-    if (!isValidInputElement(element)) {
+    if (!isValidInputElement(element) || document.activeElement !== element || element.selectionStart !== element.selectionEnd) {
+        suggestionManager.cancelStream();
         suggestionManager.clearSuggestion();
         return;
     }
-
     suggestionManager.activeInputElement = element;
     suggestionManager.clearSuggestion();
-
+    suggestionManager.cancelStream();
     clearTimeout(suggestionManager.debounceTimer);
     suggestionManager.debounceTimer = setTimeout(() => {
         const textBeforeCaret = element.value.substring(0, element.selectionStart);
         if (textBeforeCaret && textBeforeCaret.trim().length > 3) {
             requestCompletion(textBeforeCaret, element);
         }
-    }, suggestionManager.DEBOUNCE_DELAY);
+    }, 1000); // 1 second debounce
 }
 
 function isValidInputElement(element) {
@@ -662,115 +810,15 @@ function isValidInputElement(element) {
            element.isContentEditable;
 }
 
-async function requestCompletion(text, element) {
-    try {
-        // Check if chrome.runtime is available
-        if (!chrome.runtime || !chrome.runtime.sendMessage) {
-            console.warn("Extension context may be invalidated, aborting completion request");
-            return;
-        }
-
-        // Try using the streaming endpoint first
-        try {
-            console.log("Attempting streaming completion...");
-            const streamResponse = await chrome.runtime.sendMessage({
-                type: "GET_COMPLETION_STREAM", // Use the streaming endpoint
-                current_text: text,
-                language: document.documentElement.lang || 'ru'
-            }).catch(err => {
-                if (err.message.includes("Extension context invalidated")) {
-                    console.warn("Extension context was invalidated. Please refresh the page.");
-                    throw err; // Re-throw to be caught by outer try/catch
-                }
-                throw err; // Re-throw any other error
-            });
-            
-            if (streamResponse && streamResponse.success && streamResponse.stream) {
-                // Handle the streaming response
-                console.log("Using streaming completion");
-                let currentSuggestion = "";
-                const streamingInterval = setInterval(async () => {
-                    try {
-                        // Check if element is still active
-                        if (document.activeElement !== element) {
-                            clearInterval(streamingInterval);
-                            if (typeof streamResponse.cancel === 'function') {
-                                streamResponse.cancel();
-                            } else {
-                                console.log("No cancel function available");
-                            }
-                            return;
-                        }
-                        
-                        // Get next chunk of tokens
-                        const chunk = await streamResponse.readNextChunk();
-                        
-                        if (chunk.done) {
-                            clearInterval(streamingInterval);
-                            return;
-                        }
-                        
-                        // Process token chunks
-                        if (chunk.messages && chunk.messages.length > 0) {
-                            // Update with most recent suggestion
-                            const lastMessage = chunk.messages[chunk.messages.length - 1];
-                            if (lastMessage.suggestion) {
-                                currentSuggestion = lastMessage.suggestion;
-                                
-                                if (document.activeElement === element) {
-                                    suggestionManager.displaySuggestion(element, currentSuggestion);
-                                }
-                            }
-                            
-                            if (lastMessage.done) {
-                                clearInterval(streamingInterval);
-                            }
-                        }
-                    } catch (error) {
-                        console.error("Error during stream processing:", error);
-                        clearInterval(streamingInterval);
-                    }
-                }, 100); // Check for new tokens every 100ms
-                
-                return; // Exit early - we're handling this with streaming
-            }
-        } catch (streamError) {
-            // If streaming fails, fall back to non-streaming endpoint
-            console.warn("Streaming completion failed, falling back to standard completion:", streamError);
-        }
-        
-        // Fall back to regular completion if streaming isn't available or failed
-        console.log("Falling back to standard completion");
-        const response = await chrome.runtime.sendMessage({
-            type: "GET_COMPLETION", // Original non-streaming endpoint
-            current_text: text,
-            language: document.documentElement.lang || 'ru'
-        }).catch(err => {
-            // Handle potential disconnection errors
-            if (err.message.includes("Extension context invalidated")) {
-                console.warn("Extension context was invalidated. Please refresh the page.");
-                return { success: false, error: "Extension context invalidated" };
-            }
-            throw err;
-        });
-
-        // New error handling: log and return if API error
-        if (!response || !response.success) {
-            console.error("Completion API error:", response?.error || response);
-            return;
-        }
-
-        if (response.suggestion) {
-            if (document.activeElement === element) {
-                suggestionManager.displaySuggestion(element, response.suggestion);
-            }
-        }
-    } catch (error) {
-        console.error("Completion request failed. Don't try again immediately if there was an error - that could cause rapid retries", error);
-    }
-}
-
 document.addEventListener('input', handleInput, true);
+document.addEventListener('selectionchange', () => {
+    // Cancel suggestion if user selects text
+    const el = document.activeElement;
+    if (isValidInputElement(el) && (el.selectionStart !== el.selectionEnd)) {
+        suggestionManager.cancelStream();
+        suggestionManager.clearSuggestion();
+    }
+});
 
 document.addEventListener('keydown', (event) => {
     if (suggestionManager.currentSuggestion && 
@@ -778,12 +826,20 @@ document.addEventListener('keydown', (event) => {
         if (event.key === 'Tab' || event.key === 'Enter') {
             if (suggestionManager.acceptSuggestion()) {
                 event.preventDefault();
+                // After accepting, allow new completions
+                setTimeout(() => handleInput({ target: event.target }), 0);
             }
         } else if (event.key === 'Escape') {
             suggestionManager.trackSuggestionFeedback(false);
+            suggestionManager.cancelStream();
             suggestionManager.clearSuggestion();
             event.preventDefault();
         }
+    } else if (event.key === 'Escape' && suggestionManager.streamInProgress) {
+        // Allow Esc to always cancel the stream, even before first token
+        suggestionManager.cancelStream();
+        suggestionManager.clearSuggestion();
+        event.preventDefault();
     }
 }, true);
 
@@ -843,3 +899,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
     }
 });
+
+// Cancel stream when tab loses focus or visibility
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        suggestionManager.cancelStream();
+    }
+}, true);
+
+// Cancel stream when input loses focus
+document.addEventListener('blur', (event) => {
+    if (event.target === suggestionManager.activeInputElement) {
+        suggestionManager.cancelStream();
+    }
+}, true);
+
+// Cancel stream when window loses focus
+window.addEventListener('blur', () => {
+    suggestionManager.cancelStream();
+}, true);
+
+// Clean up on page unload
+window.addEventListener('unload', () => {
+    suggestionManager.cancelStream();
+}, true);

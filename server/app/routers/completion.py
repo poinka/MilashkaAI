@@ -1,15 +1,15 @@
 import logging
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from typing import Optional
-import json
-from fastapi.responses import StreamingResponse
-
-from app.core.config import settings
-from app.schemas.models import CompletionRequest, CompletionResponse
-from app.schemas.errors import ErrorResponse
-from app.core.completion import generate_completion, generate_completion_stream
+from app.db.kuzudb_client import KuzuDBClient, get_db
+from app.schemas.models import CompletionRequest
 from app.core.rag_retriever import retrieve_relevant_chunks
+from app.core.models import embedding_pipeline
+from app.core.completion import generate_completion, generate_completion_stream
+
+from app.schemas.models import CompletionResponse
+from app.schemas.errors import ErrorResponse
 
 # Configure logging
 logging.basicConfig(
@@ -28,17 +28,14 @@ router = APIRouter(
     }
 )
 
-@router.post("/", response_model=CompletionResponse, summary="Generate text completion")
-async def get_completion(request: CompletionRequest):
-    """
-    Generate a completion for the given text, using RAG context if available.
-    """
-    logger.info(f"Handling POST /api/v1/completion/ request with current_text: {request.current_text}")
+@router.post("/")
+async def get_completion(request: CompletionRequest, db: KuzuDBClient = Depends(get_db)):
     try:
-        # Get relevant context from indexed documents
         context_chunks = await retrieve_relevant_chunks(
-            request.current_text,
-            settings.RAG_TOP_K
+            query_text=request.current_text,
+            embedding_pipeline=embedding_pipeline,
+            db=db,
+            top_k=3
         )
         if not context_chunks:
             logger.info("No relevant chunks found for the query")
@@ -90,50 +87,49 @@ async def get_completion(request: CompletionRequest):
             detail=f"Completion generation failed: {str(e)}"
         )
 
-@router.post("/stream", summary="Stream text completion token-by-token")
-async def stream_completion(request: CompletionRequest):
-    """
-    Generate a completion for the given text, streaming the output token-by-token.
-    Uses Server-Sent Events format.
-    """
-    logger.info(f"Handling POST /api/v1/completion/stream request with current_text: {request.current_text}")
+@router.post("/stream")
+async def stream_completion(request: CompletionRequest, db: KuzuDBClient = Depends(get_db)):
     try:
-        logger.debug(f"Retrieving relevant chunks with top_k={settings.RAG_TOP_K}")
         context_chunks = await retrieve_relevant_chunks(
-            request.current_text,
-            settings.RAG_TOP_K
+            query_text=request.current_text,
+            embedding_pipeline=embedding_pipeline,
+            db=db,
+            top_k=3
         )
         if not context_chunks:
             logger.info("No relevant chunks found for the query")
-        else:
-            logger.debug(f"Retrieved {len(context_chunks)} context chunks: {context_chunks}")
-        
-        # Combine context
-        context = request.full_document_context or ""
-        if context_chunks:
-            logger.debug("Adding retrieved chunks to context")
-            context += "\n".join(chunk["text"] for chunk in context_chunks)
-        logger.debug(f"Final context: {context}")
         
         async def completion_generator():
-            logger.debug(f"Starting streaming completion for language: {request.language}")
-            async for token in generate_completion(
-                request.current_text,
-                request.full_document_context,
-                request.language
-            ):
-                logger.debug(f"Streaming token: {token}")
-                yield token
+            disconnected = False
+            try:
+                async for token in generate_completion_stream(
+                    request.current_text,
+                    request.full_document_context,
+                    request.language
+                ):
+                    if disconnected:
+                        logger.info("Client disconnected, stopping generation")
+                        break
+                    yield f"data: {token}\n\n"
+                    # Allow other tasks to run and check client connection
+                    await asyncio.sleep(0)
+            except ConnectionResetError:
+                logger.warning("Client connection reset")
+                disconnected = True
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                raise
         
         logger.info("Streaming completion started")
         return StreamingResponse(
-            generate_sse_events(),
-            media_type="text/event-stream"
+            completion_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
-        
     except Exception as e:
-        logger.error(f"Streaming completion failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Streaming completion failed: {str(e)}"
-        )
+        logger.error(f"Stream setup failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

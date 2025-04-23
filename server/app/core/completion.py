@@ -1,42 +1,132 @@
+import asyncio
+import multiprocessing
 import logging
-from typing import Optional
-from app.core.models import get_llm
+from typing import AsyncGenerator, Optional, List, Dict, Any
+
+from app.core.models import get_llm, get_embedding_pipeline
 from app.core.rag_retriever import retrieve_relevant_chunks
-from app.db.kuzudb_client import get_db_connection
+from app.db.kuzudb_client import get_db, KuzuDBClient
+from app.core.config import settings
 
 # Constants for prompting
 MAX_INPUT_LENGTH = 1024
 MAX_NEW_TOKENS = 100
 
-async def generate_completion(
+# Safe streaming via subprocess worker
+def _stream_worker(messages: List[Dict[str, Any]], queue: multiprocessing.Queue):
+    try:
+        logging.info("Stream worker starting...")
+        llm_model = get_llm()
+        logging.info("LLM model loaded, starting completion...")
+        error_count = 0
+        token_count = 0
+        
+        for chunk in llm_model.create_chat_completion(
+            messages=messages,
+            max_tokens=MAX_NEW_TOKENS,
+            temperature=0.7,
+            stream=True
+        ):
+            if error_count >= 3:  # Stop if too many queue errors
+                logging.warning("Too many queue errors, stopping generation")
+                break
+                
+            if chunk and "choices" in chunk and len(chunk["choices"]) > 0:
+                delta = chunk["choices"][0].get("delta", {})
+                content = delta.get("content")
+                if content:
+                    try:
+                        # Use put_nowait to avoid blocking indefinitely
+                        queue.put_nowait(content)
+                        token_count += 1
+                        logging.debug(f"Token: '{content}'")
+                        error_count = 0  # Reset error count on success
+                    except queue.Full:
+                        error_count += 1
+                        logging.warning(f"Queue full, attempt {error_count}")
+                        try:
+                            # Try one more time with a short timeout
+                            queue.put(content, timeout=0.1)
+                            error_count = 0
+                        except (queue.Full, queue.TimeoutError):
+                            # If still fails, client might be gone
+                            if error_count >= 3:
+                                logging.error("Client appears disconnected")
+                                break
+                    
+                    if token_count >= MAX_NEW_TOKENS:
+                        logging.info(f"Max tokens ({MAX_NEW_TOKENS}) reached")
+                        break
+
+        logging.info(f"Generation complete: {token_count} tokens streamed")
+        queue.put(None)  # Signal completion
+    except Exception as e:
+        logging.error(f"Stream worker error: {str(e)}")
+        try:
+            queue.put(("__error__", str(e)))
+            queue.put(None)
+        except:
+            pass  # Queue might be closed
+
+
+# Global reference to the current streaming process for cancellation
+current_stream_proc = None
+
+def stop_current_stream():
+    global current_stream_proc
+    if current_stream_proc is not None and current_stream_proc.is_alive():
+        current_stream_proc.terminate()
+        current_stream_proc.join()
+        current_stream_proc = None
+
+async def generate_completion_stream(
     current_text: str,
     full_document_context: Optional[str] = None,
     language: str = "ru",
-    top_k_rag: int = 3
-) -> str:
+    top_k_rag: int = 3,
+    db: KuzuDBClient = None
+) -> AsyncGenerator[str, None]:
+    global current_stream_proc
     """
-    Generates text completion using Gemma, augmented with RAG context from Kùzu.
+    Safe streaming via subprocess to prevent SIGSEGV in main process.
     """
-    logging.info(f"Generating completion for language: {language}")
-    llm_model = get_llm()
-    db = get_db_connection()
 
-    # Ensure Chunk table exists
+    # Ensure Chunk table exists (instantiate db if needed)
+    close_db = False
+    if db is None:
+        db = KuzuDBClient(settings.KUZUDB_PATH)
+        db.connect()
+        close_db = True
     try:
-        db.execute("""
+        # Ensure Document table exists for RAG
+        db.execute(f"""
+            CREATE NODE TABLE IF NOT EXISTS Document (
+                doc_id STRING PRIMARY KEY,
+                filename STRING,
+                status STRING,
+                created_at STRING,
+                updated_at STRING,
+                processed_at STRING,
+                error STRING
+            )
+        """)
+        # Ensure Chunk table exists
+        db.execute(f"""
             CREATE NODE TABLE IF NOT EXISTS Chunk (
-                chunk_id STRING,
+                chunk_id STRING PRIMARY KEY,
                 doc_id STRING,
                 text STRING,
-                embedding VECTOR[768],
-                created_at STRING,
-                PRIMARY KEY (chunk_id)
+                embedding FLOAT[]
             )
         """)
     except Exception as e:
         logging.error(f"Failed to ensure Chunk table: {e}")
+    finally:
+        if close_db:
+            db.close()
 
     # Retrieve RAG Context
+    query_text = current_text[-512:]
     rag_context = ""
     try:
         # Check if documents exist
@@ -44,8 +134,12 @@ async def generate_completion(
         if doc_count == 0:
             logging.info("No documents found in database for RAG.")
         else:
-            query_text = current_text[-512:]
-            relevant_chunks = await retrieve_relevant_chunks(query_text, top_k=top_k_rag)
+            relevant_chunks = await retrieve_relevant_chunks(
+                query_text,
+                get_embedding_pipeline(),
+                db,
+                top_k=top_k_rag
+            )
             if relevant_chunks:
                 rag_context = "\n\nRelevant Information:\n" + "\n---\n".join([chunk['text'] for chunk in relevant_chunks])
                 logging.info(f"🔍 Using {len(relevant_chunks)} chunks for completion:")
@@ -56,138 +150,126 @@ async def generate_completion(
     except Exception as e:
         logging.error(f"Error retrieving RAG context for query '{query_text[:50]}...': {e}")
 
-    # Construct the Prompt
-    prompt_text = current_text
-    if rag_context:
-        prompt_text = rag_context + "\n\n" + prompt_text
-
-    final_prompt = f"""<start_of_turn>user\nComplete the following text in {language}. Continue writing naturally from the existing text.\nContext:\n{prompt_text}<end_of_turn>\n<start_of_turn>model\n"""
-
-    logging.debug(f"Final prompt for completion: {final_prompt[:200]}...")
-
-    # Generate Completion
-    try:
-        # Debug the model interface
-        logging.debug(f"LLM model type: {type(llm_model).__name__}")
-        
-        # Llama.cpp compatible parameters
-        output = llm_model.create_completion(
-            prompt=final_prompt,
-            max_tokens=MAX_NEW_TOKENS,
-            temperature=0.7,
-            top_k=50,
-            top_p=0.9,
-            stop=["<end_of_turn>", "<start_of_turn>user"]
-        )
-        
-        logging.debug(f"Raw LLM output: {output}")
-        
-        if "choices" in output and len(output["choices"]) > 0:
-            suggestion = output["choices"][0]["text"].strip()
-            suggestion = suggestion.split("\n")[0].strip()
-            logging.info(f"Generated suggestion: '{suggestion[:100]}...'")
-            return suggestion
-        else:
-            logging.error(f"Unexpected LLM output format: {output}")
-            return ""  # Return empty string instead of crashing
-    except Exception as e:
-        logging.error(f"Error during LLM generation: {str(e)}", exc_info=True)
-        # Return an empty string rather than raising an exception to prevent 500 errors
-        return ""
-
-async def generate_completion_stream(
-    current_text: str,
-    full_document_context: Optional[str] = None,
-    language: str = "ru",
-    top_k_rag: int = 3
-):
-    """
-    Generates text completion using Gemma, yielding tokens as they're generated.
-    
-    Returns an async generator that yields tokens incrementally with detailed logging.
-    """
-    logging.info(f"🚀 Starting STREAMING completion for language: {language}")
-    logging.info(f"📄 User input text: {current_text[:50]}..." if len(current_text) > 50 else f"📄 User input text: {current_text}")
-    
-    llm_model = get_llm()
-    
-    if not llm_model:
-        logging.error("❌ LLM model not available")
-        raise Exception("LLM model not available")
-        
-    db = get_db_connection()
-
-    # Similar to generate_completion, but will stream results
-    # Retrieve RAG Context
-    rag_context = ""
-    try:
-        # Check if documents exist
-        doc_count = db.execute("MATCH (d:Document) RETURN count(*)").get_next()[0]
-        logging.info(f"📚 Found {doc_count} documents in database")
-        
-        if doc_count > 0:
-            query_text = current_text[-512:]
-            relevant_chunks = await retrieve_relevant_chunks(query_text, top_k=top_k_rag)
-            if relevant_chunks:
-                rag_context = "\n\nRelevant Information:\n" + "\n---\n".join([chunk['text'] for chunk in relevant_chunks])
-                logging.info(f"🔍 Retrieved {len(relevant_chunks)} relevant chunks from RAG")
-                for i, chunk in enumerate(relevant_chunks):
-                    logging.info(f"  📎 Chunk {i+1}: {chunk['text'][:50]}...")
-            else:
-                logging.info("🔍 No relevant chunks found via RAG")
-    except Exception as e:
-        logging.error(f"❌ Error retrieving chunks: {e}")
-
-    # Construct the prompt just like in generate_completion
+    # Construct the Prompt text
     prompt_text = current_text
     if full_document_context:
         prompt_text = full_document_context + "\n\n" + prompt_text
-        logging.info(f"📝 Added document context to prompt (now {len(prompt_text)} chars)")
     if rag_context:
         prompt_text = rag_context + "\n\n" + prompt_text
-        logging.info(f"📝 Added RAG context to prompt (now {len(prompt_text)} chars)")
 
-    # System prompt based on language
-    system_message = f"You are a helpful assistant. Continue the text in {language}."
-    logging.info(f"💬 System message: {system_message}")
-    
-    # Create chat format expected by the model
+    # Prepare system and user messages for streaming
+    const_system = f"You are a helpful assistant. Continue the text in {language}."
     messages = [
-        {"role": "system", "content": system_message},
+        {"role": "system", "content": const_system},
         {"role": "user", "content": f"Complete this text: {prompt_text}"}
     ]
-    
-    # Stream the response
+
+    # Before starting new process, stop any previous one
+    stop_current_stream()
+    queue: multiprocessing.Queue = multiprocessing.Queue()
+    proc = multiprocessing.Process(target=_stream_worker, args=(messages, queue))
+    current_stream_proc = proc
+    proc.start()
+    loop = asyncio.get_event_loop()
+    while True:
+        token = await loop.run_in_executor(None, queue.get)
+        if token is None:
+            break
+        if isinstance(token, tuple) and token[0] == "__error__":
+            logging.error(f"Error in streaming subprocess: {token[1]}")
+            yield f"[Error: {token[1]}]"
+            break
+        yield token
+    proc.join()
+    current_stream_proc = None
+    return
+
+async def generate_completion(
+    current_text: str,
+    full_document_context: Optional[str] = None,
+    language: str = "ru",
+    top_k_rag: int = 3,
+    db: KuzuDBClient = None
+) -> str:
+    # Ensure Chunk table exists (instantiate db if needed)
+    close_db = False
+    if db is None:
+        db = KuzuDBClient(settings.KUZUDB_PATH)
+        db.connect()
+        close_db = True
     try:
-        logging.info("🔄 Starting model token generation...")
-        completion = llm_model.create_chat_completion(
-            messages=messages,
-            max_tokens=MAX_NEW_TOKENS,
-            temperature=0.7,
-            stream=True  # Enable streaming
-        )
-        
-        # Counter for tracking tokens
-        token_count = 0
-        generated_text = ""
-        
-        # Yield tokens as they arrive
-        for chunk in completion:
-            if chunk and "choices" in chunk and len(chunk["choices"]) > 0:
-                # Extract token from the completion chunk 
-                delta = chunk["choices"][0].get("delta", {})
-                if "content" in delta and delta["content"]:
-                    token = delta["content"]
-                    token_count += 1
-                    generated_text += token
-                    
-                    # Log every token for real-time visibility
-                    if token_count % 5 == 0 or len(token) > 1:  # Log every 5th token or longer tokens
-                        logging.info(f"🔤 Token #{token_count}: '{token}' (Current text: '{generated_text[-50:] if len(generated_text) > 50 else generated_text}')")
-                    
-                    yield token
-        
-        logging.info(f"✅ Completion finished. Generated {token_count} tokens: '{generated_text}'")
+        # Ensure Document table exists for RAG
+        db.execute(f"""
+            CREATE NODE TABLE IF NOT EXISTS Document (
+                doc_id STRING PRIMARY KEY,
+                filename STRING,
+                status STRING,
+                created_at STRING,
+                updated_at STRING,
+                processed_at STRING,
+                error STRING
+            )
+        """)
+        # Ensure Chunk table exists
+        db.execute(f"""
+            CREATE NODE TABLE IF NOT EXISTS Chunk (
+                chunk_id STRING PRIMARY KEY,
+                doc_id STRING,
+                text STRING,
+                embedding FLOAT[]
+            )
+        """)
     except Exception as e:
-        logging.error(f"❌ Error during streaming completion: {e}")
-        yield f"[Error: {str(e)}]"
+        logging.error(f"Failed to ensure Chunk table: {e}")
+    finally:
+        if close_db:
+            db.close()
+
+    # Retrieve RAG Context
+    rag_context = ""
+    try:
+        doc_count = db.execute("MATCH (d:Document) RETURN count(*)").get_next()[0]
+        if doc_count == 0:
+            logging.info("No documents found in database for RAG.")
+        else:
+            query_text = current_text[-512:]
+            relevant_chunks = await retrieve_relevant_chunks(
+                query_text,
+                get_embedding_pipeline(),
+                db,
+                top_k=top_k_rag
+            )
+            if relevant_chunks:
+                rag_context = "\n\nRelevant Information:\n" + "\n---\n".join([chunk['text'] for chunk in relevant_chunks])
+                logging.info(f"🔍 Using {len(relevant_chunks)} chunks for completion:")
+                for i, chunk in enumerate(relevant_chunks):
+                    logging.info(f"RAG Chunk {i+1} (Score: {chunk['score']:.4f}):\n{chunk['text']}\n")
+            else:
+                logging.info("❌ No relevant chunks found via RAG.")
+    except Exception as e:
+        logging.error(f"Error retrieving RAG context for query '{{}}...': {{}}".format(current_text[:50], e))
+
+    # Construct the Prompt text
+    prompt_text = current_text
+    if full_document_context:
+        prompt_text = full_document_context + "\n\n" + prompt_text
+    if rag_context:
+        prompt_text = rag_context + "\n\n" + prompt_text
+    const_system = f"You are a helpful assistant. Continue the text in {language}."
+    messages = [
+        {"role": "system", "content": const_system},
+        {"role": "user", "content": f"Complete this text: {prompt_text}"}
+    ]
+    llm_model = get_llm()
+    output = llm_model.create_chat_completion(
+        messages=messages,
+        max_tokens=MAX_NEW_TOKENS,
+        temperature=0.7,
+        stream=False
+    )
+    if "choices" in output and len(output["choices"]) > 0:
+        suggestion = output["choices"][0]["message"]["content"].strip()
+        return suggestion
+    else:
+        logging.error(f"Unexpected LLM output format: {output}")
+        return ""

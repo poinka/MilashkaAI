@@ -4,7 +4,7 @@ from typing import Optional
 import logging
 from datetime import datetime
 
-from app.db.kuzudb_client import get_db_connection
+from app.db.kuzudb_client import get_db, KuzuDBClient
 
 router = APIRouter()
 
@@ -19,12 +19,11 @@ class SuggestionFeedback(BaseModel):
 
 @router.post("/track-suggestion",
     summary="Track accepted/rejected suggestions to improve model")
-async def track_suggestion_feedback(feedback: SuggestionFeedback):
+async def track_suggestion_feedback(feedback: SuggestionFeedback, db: KuzuDBClient = Depends(get_db)):
     """
     Record user feedback on suggestions to improve future recommendations.
     Tracks whether suggestions were accepted or rejected.
     """
-    db = get_db_connection()
     
     try:
         # Use a dedicated graph for feedback tracking
@@ -148,12 +147,12 @@ async def track_suggestion_feedback(feedback: SuggestionFeedback):
 async def get_suggestion_statistics(
     source: Optional[str] = None,
     language: Optional[str] = None,
-    limit: int = 100
+    limit: int = 100,
+    db: KuzuDBClient = Depends(get_db)
 ):
     """
     Get statistics about suggestion acceptance rates to help improve the model.
     """
-    db = get_db_connection()
     
     try:
         graph_name = "suggestion_feedback"
