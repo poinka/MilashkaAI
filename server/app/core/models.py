@@ -1,100 +1,70 @@
-from transformers import pipeline
-import torch
-from app.core.config import settings
 import logging
+from typing import Optional
 
-# llama-cpp-python for GGUF LLM
-from llama_cpp import Llama
+from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+from app.core.config import settings
+from app.core.llm_wrapper import get_llm
 
-llm_model = None
-embedding_pipeline = None
-asr_pipeline = None
+logger = logging.getLogger('app.core.models')
 
+# Global model instances
+_embedding_model: Optional[SentenceTransformer] = None
+_asr_model = None
 
-def load_models():
-    """Loads all required AI models."""
-    global llm_model, embedding_pipeline, asr_pipeline
-    print("Loading AI models...")
-
-    # --- Load Llama.cpp GGUF LLM ---
-    try:
-        print(f"Loading LLM (llama.cpp): {settings.LLAMA_GGUF_PATH}")
-        llm_model = Llama(
-            model_path=settings.LLAMA_GGUF_PATH,
-            n_ctx=4096,  # adjust as needed
-            n_threads=4, # adjust as needed
-            n_gpu_layers=20 # adjust for Metal
-        )
-        print("Llama.cpp LLM loaded successfully.")
-    except Exception as e:
-        logging.error(f"Failed to load Llama.cpp LLM: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to load Llama.cpp LLM: {e}") from e
-
-    # --- Load Embedding Model ---
-    try:
-        print(f"Loading Embedding model: {settings.EMBEDDING_MODEL_ID}")
-        from sentence_transformers import SentenceTransformer
-        embedding_pipeline = SentenceTransformer(
-            settings.EMBEDDING_MODEL_ID,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        _ = embedding_pipeline.encode(["test"])
-        print("Embedding model loaded successfully.")
-    except ImportError:
-        logging.error("SentenceTransformers library not found. Please install it: pip install sentence-transformers")
-        raise RuntimeError("SentenceTransformers library not found.")
-    except Exception as e:
-        logging.error(f"Failed to load Embedding model: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to load Embedding model: {e}") from e
-
-    # --- Load Whisper ASR ---
-    try:
-        print(f"Loading ASR model: {settings.WHISPER_MODEL_ID}")
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        asr_pipeline = pipeline(
-            "automatic-speech-recognition",
-            model=settings.WHISPER_MODEL_ID,
-            torch_dtype=torch_dtype,
-            device=device,
-        )
-        print("Whisper model loaded successfully.")
-    except Exception as e:
-        logging.error(f"Failed to load Whisper model: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to load Whisper model: {e}") from e
-
-    print("All AI models loaded.")
-
-def unload_models():
-    """Unloads models to free up memory (if necessary)."""
-    global llm_model, embedding_pipeline, asr_pipeline
-    print("Unloading AI models...")
-    # Explicitly delete models and clear CUDA cache if using GPU
-    del llm_model
-    del embedding_pipeline
-    del asr_pipeline
-    llm_model = None
-    embedding_pipeline = None
-    asr_pipeline = None
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    print("AI models unloaded.")
-
-# --- Accessor functions ---
-# These functions provide access to the loaded models.
-# Consider using dependency injection in FastAPI instead of global accessors.
-
-def get_llm():
-    if not llm_model:
-        raise RuntimeError("LLM model not loaded. Call load_models() first.")
-    return llm_model
-
-def get_embedding_pipeline():
-    if not embedding_pipeline:
-        raise RuntimeError("Embedding model not loaded. Call load_models() first.")
-    return embedding_pipeline
+def get_embedding_pipeline() -> SentenceTransformer:
+    """Get the global embedding model instance"""
+    global _embedding_model
+    if not _embedding_model:
+        logger.info(f"Loading Embedding model: {settings.EMBEDDING_MODEL_NAME}")
+        _embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
+        logger.info("✓ Embedding model loaded successfully")
+    return _embedding_model
 
 def get_asr_pipeline():
-    if not asr_pipeline:
-        raise RuntimeError("ASR model not loaded. Call load_models() first.")
-    return asr_pipeline
+    """Get the global ASR model instance"""
+    global _asr_model
+    if not _asr_model:
+        logger.info(f"Loading ASR model: {settings.ASR_MODEL_NAME}")
+        _asr_model = pipeline("automatic-speech-recognition", 
+                            model=settings.ASR_MODEL_NAME, 
+                            device="cpu")
+        logger.info("✓ ASR model loaded successfully")
+    return _asr_model
+
+def load_models():
+    """
+    Initialize all AI models required by the application.
+    Models are loaded lazily when first accessed.
+    """
+    try:
+        # Initialize each model by calling its getter
+        logger.info("Initializing AI models...")
+        get_llm()
+        get_embedding_pipeline()
+        get_asr_pipeline()
+        logger.info("✓ All AI models initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize models: {str(e)}", exc_info=True)
+        raise
+
+def unload_models():
+    """
+    Clean up model resources.
+    """
+    global _embedding_model, _asr_model
+    logger.info("Unloading AI models...")
+    
+    try:
+        # Explicitly delete model instances
+        if _embedding_model:
+            del _embedding_model
+        if _asr_model:
+            del _asr_model
+            
+        _embedding_model = None
+        _asr_model = None
+        
+        logger.info("✓ Models unloaded successfully")
+    except Exception as e:
+        logger.error(f"Error during model cleanup: {str(e)}", exc_info=True)

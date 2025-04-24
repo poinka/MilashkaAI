@@ -1,15 +1,18 @@
-console.log("MilashkaAI content script loaded.");
+console.log("Комплит content script loaded.");
 
 // default API URL in case storage hasn't loaded yet
-window.MILASHKA_API_URL = 'http://localhost:8000/api/v1';
+window.COMPLIT_API_URL = 'http://localhost:8000/api/v1';
+
+// Enable detailed debug logging
+const DEBUG_MODE = true;
 
 function showContextInvalidatedError() {
     // Remove any existing error notification first
-    const existing = document.getElementById('milashka-context-error');
+    const existing = document.getElementById('komplit-context-error');
     if (existing) existing.remove();
     
     const errorBar = document.createElement('div');
-    errorBar.id = 'milashka-context-error';
+    errorBar.id = 'komplit-context-error';
     Object.assign(errorBar.style, {
         position: 'fixed',
         top: '0',
@@ -50,7 +53,7 @@ class SuggestionManager {
 
     showToast(message, type = 'info') {
         // Notification functionality removed - only log to console
-        console.log(`[MilashkaAI Toast] ${type}: ${message}`);
+        console.log(`[Комплит Toast] ${type}: ${message}`);
         // No UI elements created or shown
     }
 
@@ -117,16 +120,25 @@ class SuggestionManager {
     }
 
     displaySuggestion(element, suggestionText) {
-        console.log('[MilashkaAI] displaySuggestion called', { element, suggestionText });
+        if (DEBUG_MODE) {
+            console.log('[Комплит] displaySuggestion called', { 
+                element, 
+                suggestionText, 
+                textLength: suggestionText ? suggestionText.length : 0,
+                textHex: suggestionText ? suggestionText.split('').map(c => c.charCodeAt(0).toString(16)).join(' ') : ''
+            });
+        }
+        
         // Throttle updates
         const now = Date.now();
         if (now - this.lastUpdate < this.updateThrottle) return;
         this.lastUpdate = now;
 
-        if (!suggestionText) {
+        if (!suggestionText || suggestionText.trim() === '') {
             this.clearSuggestion();
             return;
         }
+        
         this.clearSuggestion();
         this.currentSuggestion = suggestionText;
         this.activeInputElement = element;
@@ -259,43 +271,83 @@ class SuggestionManager {
 
 class EditingUI {
     constructor() {
-        this.floatingMenu = null;
-        this.currentSelection = null;
-        this.currentSelectionRange = null;
-        this.isProcessing = false;
+        // Core state
+        this.menu = null;
+        this.originalText = null;
+        this.targetElement = null;
+        this.selectionStart = null;
+        this.selectionEnd = null;
+        this.speechManager = new SpeechManager(); // Add speech manager
     }
 
-    showFloatingMenu(x, y, selectedText) {
-        this.hideFloatingMenu();
-        this.currentSelection = selectedText;
+    capture() {
+        // Capture selection state immediately when edit is triggered
+        const selection = window.getSelection();
+        const selectedText = selection.toString().trim();
+        
+        if (!selectedText) {
+            console.warn('[MilashkaAI] No text selected');
+            return false;
+        }
 
-        this.floatingMenu = document.createElement('div');
-        this.floatingMenu.className = 'milashka-floating-menu';
-        Object.assign(this.floatingMenu.style, {
+        // Store original text and target
+        this.originalText = selectedText;
+        
+        // Handle input/textarea elements
+        if (document.activeElement instanceof HTMLInputElement || 
+            document.activeElement instanceof HTMLTextAreaElement) {
+            this.targetElement = document.activeElement;
+            this.selectionStart = this.targetElement.selectionStart;
+            this.selectionEnd = this.targetElement.selectionEnd;
+            return true;
+        }
+        
+        // Handle content editable and regular page text
+        if (selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            // Create simple object with just the info we need
+            this.targetElement = {
+                range: range.cloneRange(),
+                isPageText: true
+            };
+            return true;
+        }
+
+        return false;
+    }
+
+    showFloatingMenu(x, y) {
+        // Only show menu if we have a valid selection captured
+        if (!this.originalText) {
+            console.warn('[MilashkaAI] Cannot show menu without selection');
+            return;
+        }
+
+        this.hideFloatingMenu();
+
+        // Create menu container
+        this.menu = document.createElement('div');
+        this.menu.className = 'milashka-floating-menu';
+        Object.assign(this.menu.style, {
             position: 'fixed',
             left: `${x}px`,
             top: `${y}px`,
             backgroundColor: 'white',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
             borderRadius: '4px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
             padding: '8px',
-            zIndex: '1000000'
+            zIndex: '1000000',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
         });
 
+        // Create input container
         const inputWrapper = document.createElement('div');
         inputWrapper.style.display = 'flex';
-        inputWrapper.style.marginBottom = '8px';
+        inputWrapper.style.gap = '8px';
 
-        const input = document.createElement('input');
-        Object.assign(input.style, {
-            width: '200px',
-            padding: '6px',
-            marginRight: '4px',
-            border: '1px solid #ddd',
-            borderRadius: '4px'
-        });
-        input.placeholder = 'Describe edit (or use voice)';
-
+        // Create voice button
         const voiceButton = document.createElement('button');
         Object.assign(voiceButton.style, {
             padding: '6px 12px',
@@ -303,30 +355,73 @@ class EditingUI {
             color: 'white',
             border: 'none',
             borderRadius: '4px',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            fontSize: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: '36px'
         });
         voiceButton.innerHTML = '🎙️';
-        voiceButton.onclick = () => this.startVoiceEdit();
+        voiceButton.onclick = () => {
+            if (this.speechManager.isRecording) {
+                voiceButton.innerHTML = '🎙️';
+                voiceButton.style.backgroundColor = '#4CAF50';
+                this.speechManager.stopRecording();
+            } else {
+                voiceButton.innerHTML = '⏹️';
+                voiceButton.style.backgroundColor = '#f44336';
+                const input = this.menu.querySelector('.milashka-edit-input');
+                this.speechManager.startRecording(null, true, (formattedText) => {
+                    if (input) {
+                        input.value = formattedText;
+                        voiceButton.innerHTML = '🎙️';
+                        voiceButton.style.backgroundColor = '#4CAF50';
+                    }
+                });
+            }
+        };
 
-        inputWrapper.appendChild(input);
-        inputWrapper.appendChild(voiceButton);
+        // Create input field
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'milashka-edit-input';
+        Object.assign(input.style, {
+            width: '200px',
+            padding: '6px',
+            border: '1px solid #ddd',
+            borderRadius: '4px',
+            fontSize: '14px'
+        });
+        input.placeholder = 'Describe your edit';
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('autocorrect', 'off');
+        input.setAttribute('autocapitalize', 'off');
+        input.setAttribute('spellcheck', 'false');
+        
+        input.addEventListener('mousedown', e => e.stopPropagation());
+        input.addEventListener('keydown', e => e.stopPropagation());
 
-        const buttonsWrapper = document.createElement('div');
-        buttonsWrapper.style.display = 'flex';
-        buttonsWrapper.style.gap = '8px';
+        // Create buttons container
+        const buttonWrapper = document.createElement('div');
+        buttonWrapper.style.display = 'flex';
+        buttonWrapper.style.gap = '4px';
 
-        const submitButton = document.createElement('button');
-        Object.assign(submitButton.style, {
+        // Create edit button
+        const editButton = document.createElement('button');
+        editButton.className = 'milashka-edit-button';
+        Object.assign(editButton.style, {
             padding: '6px 12px',
             backgroundColor: '#4CAF50',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
             cursor: 'pointer',
-            flex: '1'
+            flex: 1
         });
-        submitButton.textContent = 'Edit';
+        editButton.textContent = 'Edit';
 
+        // Create cancel button
         const cancelButton = document.createElement('button');
         Object.assign(cancelButton.style, {
             padding: '6px 12px',
@@ -338,162 +433,158 @@ class EditingUI {
         });
         cancelButton.textContent = 'Cancel';
 
-buttonsWrapper.appendChild(submitButton);
-        buttonsWrapper.appendChild(cancelButton);
-
-this.floatingMenu.appendChild(inputWrapper);
-        this.floatingMenu.appendChild(buttonsWrapper);
-
-        submitButton.onclick = () => {
-            if (!this.isProcessing && input.value) {
-                this.performEdit(this.currentSelection, input.value);
+        // Wire up button events
+        editButton.onclick = async () => {
+            if (input.value) {
+                editButton.disabled = true;
+                editButton.textContent = 'Processing...';
+                await this.performEdit(input.value);
+                this.hideFloatingMenu();
             }
         };
 
         cancelButton.onclick = () => this.hideFloatingMenu();
 
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter' && !this.isProcessing && input.value) {
-                this.performEdit(this.currentSelection, input.value);
+        // Handle enter key in input
+        input.onkeydown = async (e) => {
+            if (e.key === 'Enter' && input.value) {
+                editButton.disabled = true;
+                editButton.textContent = 'Processing...';
+                await this.performEdit(input.value);
+                this.hideFloatingMenu();
             } else if (e.key === 'Escape') {
                 this.hideFloatingMenu();
             }
         };
 
-        document.body.appendChild(this.floatingMenu);
-        input.focus();
+        // Assemble all components
+        inputWrapper.appendChild(input);        // Add input field first
+        inputWrapper.appendChild(voiceButton);  // Add voice button next to input
+        buttonWrapper.appendChild(editButton);  // Add edit button
+        buttonWrapper.appendChild(cancelButton); // Add cancel button
+        
+        // Add everything to menu in correct order
+        this.menu.appendChild(inputWrapper);
+        this.menu.appendChild(buttonWrapper);
+        document.body.appendChild(this.menu);
 
-        document.addEventListener('mousedown', this.handleClickOutsideMenu);
+        // Add global click handler
+        document.addEventListener('mousedown', this.handleClickOutside);
     }
 
-    hideFloatingMenu() {
-        if (this.floatingMenu) {
-            this.floatingMenu.remove();
-            this.floatingMenu = null;
-            this.currentSelection = null;
-            this.currentSelectionRange = null;
-            document.removeEventListener('mousedown', this.handleClickOutsideMenu);
-        }
-    }
-
-    handleClickOutsideMenu = (event) => {
-        if (this.floatingMenu && !this.floatingMenu.contains(event.target)) {
+    handleClickOutside = (e) => {
+        if (this.menu && !this.menu.contains(e.target)) {
             this.hideFloatingMenu();
         }
+    };
+
+    hideFloatingMenu() {
+        if (this.menu) {
+            this.menu.remove();
+            this.menu = null;
+            document.removeEventListener('mousedown', this.handleClickOutside);
+        }
     }
 
-    async performEdit(selectedText, prompt) {
-        if (this.isProcessing) return;
-
-        this.isProcessing = true;
-        this.updateMenuState(true, 'Processing...');
-        
-        console.log('[MilashkaAI] Starting edit with prompt:', prompt);
+    async performEdit(prompt) {
+        if (!this.originalText || !this.targetElement) {
+            console.error('[MilashkaAI] Cannot edit: no valid selection');
+            this.showFeedback('Cannot edit: no valid selection', 'error');
+            return;
+        }
 
         try {
-            console.log('[MilashkaAI] Sending edit request to background script');
+            console.log('[MilashkaAI] Sending edit request:', {
+                text: this.originalText,
+                prompt: prompt
+            });
+
             const response = await chrome.runtime.sendMessage({
                 type: "EDIT_TEXT",
-                selected_text: selectedText,
+                selected_text: this.originalText,
                 prompt: prompt,
-                language: document.documentElement.lang || 'ru'
+                language: document.documentElement.lang || 'en'
             });
 
             console.log('[MilashkaAI] Received edit response:', response);
 
-            if (response.success) {
-                console.log('[MilashkaAI] Edit successful, applying edit:', response.edited_text);
-                this.applyEdit(response.edited_text, response.confidence);
-                if (response.warning) {
-                    this.showFeedback(response.warning, 'warning');
-                }
-            } else {
-                console.error('[MilashkaAI] Edit failed:', response.error);
-                throw new Error(response.error || 'Unknown error occurred');
+            console.log('[MilashkaAI] Response:', response);
+            
+            // The edited_text is actually in response.data.edited_text
+            if (!response.edited_text) {
+                throw new Error(response.error || 'No edited text received');
             }
+
+            this.applyEdit(response.edited_text);
+            this.showFeedback('Edit applied successfully', 'success');
+
         } catch (error) {
-            console.error('[MilashkaAI] Edit error:', error);
+            console.error('[MilashkaAI] Edit failed:', error);
             this.showFeedback(`Edit failed: ${error.message}`, 'error');
-        } finally {
-            this.isProcessing = false;
-            this.hideFloatingMenu();
         }
     }
 
-    applyEdit(editedText, confidence) {
+    applyEdit(newText) {
+        if (!this.targetElement) {
+            console.error('[MilashkaAI] Cannot apply edit: no target element');
+            return;
+        }
+
         try {
-            const selection = window.getSelection();
-            
-            if (selection.rangeCount > 0) {
-                const range = selection.getRangeAt(0);
+            if (this.targetElement.isPageText) {
+                // Handle page text edits
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(this.targetElement.range);
                 
-                // Delete the current selection contents
+                const range = selection.getRangeAt(0);
                 range.deleteContents();
                 
-                // Create a proper text node for the edited content
-                if (editedText) {
-                    // Check if the edited text contains HTML
-                    if (/<[a-z][\s\S]*>/i.test(editedText)) {
-                        // For HTML content
-                        const temp = document.createElement('div');
-                        temp.innerHTML = editedText;
-                        
-                        // Insert each child node from the temp div
-                        const fragment = document.createDocumentFragment();
-                        while (temp.firstChild) {
-                            fragment.appendChild(temp.firstChild);
-                        }
-                        range.insertNode(fragment);
-                    } else {
-                        // For plain text content
-                        const textNode = document.createTextNode(editedText);
-                        range.insertNode(textNode);
+                if (/<[a-z][\s\S]*>/i.test(newText)) {
+                    // Handle HTML content
+                    const temp = document.createElement('div');
+                    temp.innerHTML = newText;
+                    const fragment = document.createDocumentFragment();
+                    while (temp.firstChild) {
+                        fragment.appendChild(temp.firstChild);
                     }
-                    
-                    // Collapse the selection to the end of the inserted content
-                    selection.collapseToEnd();
-                    
-                    // Show confidence feedback if needed
-                    if (confidence < 0.7) {
-                        this.showFeedback(
-                            'Low confidence in edit. Please review the changes.',
-                            'warning'
-                        );
-                    } else {
-                        this.showFeedback('Edit applied successfully', 'info');
-                    }
+                    range.insertNode(fragment);
                 } else {
-                    this.showFeedback('No edit content received', 'error');
+                    // Handle plain text
+                    range.insertNode(document.createTextNode(newText));
                 }
+                
+                selection.collapseToEnd();
+                
             } else {
-                this.showFeedback('Could not apply edit: no active selection', 'error');
+                // Handle input/textarea edits
+                const element = this.targetElement;
+                const before = element.value.substring(0, this.selectionStart);
+                const after = element.value.substring(this.selectionEnd);
+                element.value = before + newText + after;
+                
+                // Update cursor position
+                const newPosition = this.selectionStart + newText.length;
+                element.selectionStart = element.selectionEnd = newPosition;
+                
+                // Trigger input event
+                element.dispatchEvent(new Event('input', { bubbles: true }));
             }
         } catch (error) {
-            console.error('Error applying edit:', error);
-            this.showFeedback(`Failed to apply edit: ${error.message}`, 'error');
-        }
-    }
-
-    updateMenuState(isProcessing, message = '') {
-        if (!this.floatingMenu) return;
-
-        const input = this.floatingMenu.querySelector('input');
-        const submitButton = this.floatingMenu.querySelector('button:not([class*="voice"])');
-
-        if (isProcessing) {
-            input.disabled = true;
-            submitButton.disabled = true;
-            submitButton.textContent = message;
-        } else {
-            input.disabled = false;
-            submitButton.disabled = false;
-            submitButton.textContent = 'Edit';
+            console.error('[MilashkaAI] Error applying edit:', error);
+            throw error;
+        } finally {
+            // Clear state
+            this.targetElement = null;
+            this.selectionStart = null;
+            this.selectionEnd = null;
+            this.originalText = null;
         }
     }
 
     showFeedback(message, type = 'info') {
-        const feedback = document.createElement('div');
-        Object.assign(feedback.style, {
+        const toast = document.createElement('div');
+        Object.assign(toast.style, {
             position: 'fixed',
             bottom: '20px',
             right: '20px',
@@ -501,40 +592,32 @@ this.floatingMenu.appendChild(inputWrapper);
             borderRadius: '4px',
             color: 'white',
             zIndex: '1000001',
-            animation: 'fadeIn 0.3s, fadeOut 0.3s 2.7s',
-            backgroundColor: type === 'error' ? '#f44336' :
-                           type === 'warning' ? '#ff9800' : '#4CAF50'
+            backgroundColor: 
+                type === 'error' ? '#f44336' :
+                type === 'warning' ? '#ff9800' : '#4CAF50',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            animation: 'fadeInOut 3s ease-in-out'
         });
         
-        feedback.textContent = message;
-        document.body.appendChild(feedback);
-        
-        setTimeout(() => feedback.remove(), 3000);
-    }
-
-    startVoiceEdit() {
-        // Use Web Speech API for local streaming and then server for formatting
-        if (speechManager.isRecording) {
-            speechManager.stopRecording();
-            return;
-        }
-
-        const voiceButton = this.floatingMenu.querySelector('button:not([class*="submit"])');
-        const input = this.floatingMenu.querySelector('input');
-        
-        voiceButton.innerHTML = '⏹️';
-        voiceButton.style.backgroundColor = '#f44336';
-        
-        // Start recording with edit mode and callback
-        speechManager.startRecording(null, true, (formattedText) => {
-            // When transcription is complete and formatted, populate the input
-            if (input && this.floatingMenu) {
-                input.value = formattedText;
-                
-                voiceButton.innerHTML = '🎙️';
-                voiceButton.style.backgroundColor = '#4CAF50';
+        // Add fadeInOut animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes fadeInOut {
+                0% { opacity: 0; transform: translateY(20px); }
+                10% { opacity: 1; transform: translateY(0); }
+                90% { opacity: 1; transform: translateY(0); }
+                100% { opacity: 0; transform: translateY(-20px); }
             }
-        });
+        `;
+        document.head.appendChild(style);
+        
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        
+        setTimeout(() => {
+            toast.remove();
+            style.remove();
+        }, 3000);
     }
 }
 
@@ -778,272 +861,99 @@ class SpeechManager {
     }
 }
 
+function isValidInputElement(element) {
+    return (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
+           !element.classList.contains('milashka-edit-input');
+}
+
+// Initialize managers and UI
 const suggestionManager = new SuggestionManager();
 const editingUI = new EditingUI();
-const speechManager = new SpeechManager();
 
-async function requestCompletion(text, element) {
-    // Define language code at the top of the function to ensure it's available everywhere
-    const langCode = document.documentElement.lang || 'ru';
+// Handle input events for autocomplete
+document.addEventListener('input', async (event) => {
+    const element = event.target;
     
-    try {
-        suggestionManager.cancelStream('requestCompletion_start');
-        const requestId = ++suggestionManager.currentRequestId;
-        suggestionManager.abortController = new AbortController();
-        suggestionManager.streamInProgress = true;
-        const apiUrl = window.MILASHKA_API_URL;
-        
-        const resp = await fetch(`${apiUrl}/completion/stream`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ current_text: text, language: langCode }),
-            signal: suggestionManager.abortController.signal
-        });
-        
-        if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '', suggestion = text; // Start with current text
-        
-        while (true) {
-            if (requestId !== suggestionManager.currentRequestId || !document.hasFocus()) {
-                try { reader.cancel(); } catch (e) {}
-                break;
-            }
-            const { value, done } = await reader.read();
-            if (done) break;
-            
-            buffer += decoder.decode(value, { stream: true });
-            console.log(`[MilashkaAI] Received data chunk:`, buffer);
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop() || '';
-            
-            for (const part of parts) {
-                console.log(`[MilashkaAI] Processing part:`, part);
-                if (part.startsWith('data: ')) {
-                    const token = part.slice(6);
-                    console.log(`[MilashkaAI] Extracted token: '${token}'`);
-                    if (token && document.activeElement === element && 
-                        requestId === suggestionManager.currentRequestId) {
-                        // Show each token immediately
-                        suggestion += token;
-                        console.log(`[MilashkaAI] Displaying suggestion: '${suggestion.slice(-20)}...'`);
-                        suggestionManager.displaySuggestion(element, suggestion);
+    // Skip if element is not valid for suggestions or is our edit menu input
+    if (!isValidInputElement(element)) {
+        return;
+    }
+
+    // Clear any existing debounce timer
+    if (suggestionManager.debounceTimer) {
+        clearTimeout(suggestionManager.debounceTimer);
+    }
+
+    // Set new debounce timer
+    suggestionManager.debounceTimer = setTimeout(async () => {
+        if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
+            const textBeforeCursor = element.value.substring(0, element.selectionStart);
+            if (textBeforeCursor && textBeforeCursor.trim().length > 3) {
+                try {
+                    const response = await chrome.runtime.sendMessage({
+                        type: "GET_COMPLETION",
+                        text: textBeforeCursor,
+                        language: document.documentElement.lang || 'en'
+                    });
+                    
+                    if (response.success && response.completion) {
+                        suggestionManager.displaySuggestion(element, textBeforeCursor + response.completion);
                     }
+                } catch (error) {
+                    console.error('[MilashkaAI] Completion error:', error);
                 }
             }
         }
-    } catch (error) {
-        console.error('Completion error:', error);
-        if (error.message?.includes('Extension context invalidated')) {
-            showContextInvalidatedError();
-            return;
-        }
-        
-        // Determine if this is a "normal" error that should be silenced
-        const isExpectedError = 
-            // AbortErrors are expected during normal typing
-            error.name?.includes('AbortError') || 
-            error.message?.includes('abort') ||
-            // DOMException often happens when streams are interrupted
-            error instanceof DOMException || 
-            // Also, the stream might have been canceled by us intentionally
-            !suggestionManager.streamInProgress || 
-            requestId !== suggestionManager.currentRequestId;
-            
-        // Only show error toast for meaningful errors, not for expected interruptions
-        if (!isExpectedError) {
-            console.warn('Showing error notification for:', error);
-            suggestionManager.showToast('Failed to get completion', 'error');
-        }
-    } finally {
-        suggestionManager.abortController = null;
-        suggestionManager.streamInProgress = false;
-    }
+    }, 700);
+});
 
-    // Fallback to non-streaming completion via background
-    try {
-        const response = await chrome.runtime.sendMessage({
-            type: 'GET_COMPLETION',
-            current_text: text,
-            language: langCode // Use the langCode defined outside the try block
-        });
-        if (response && response.success && response.suggestion) {
-            suggestionManager.displaySuggestion(element, response.suggestion);
-        }
-    } catch (error) {
-        console.error('Fallback completion failed:', error);
-    }
-}
-
-function handleInput(event) {
+// Handle special keys for suggestions
+document.addEventListener('keydown', (event) => {
     const element = event.target;
-    if (!isValidInputElement(element) || document.activeElement !== element || element.selectionStart !== element.selectionEnd) {
-        suggestionManager.cancelStream('handleInput_invalid');
+    if (!isValidInputElement(element)) return;
+
+    if (event.key === 'Tab' && !event.shiftKey && suggestionManager.currentSuggestion) {
+        event.preventDefault();
+        suggestionManager.acceptSuggestion();
+    } else if (event.key === 'Escape') {
+        suggestionManager.cancelStream('globalKeydown');
         suggestionManager.clearSuggestion();
+    }
+}, true);
+
+// Handle selection-based editing
+document.addEventListener('mouseup', (event) => {
+    // Don't show menu if click was inside our own UI
+    if (editingUI.menu && editingUI.menu.contains(event.target)) {
         return;
     }
     
-    // Cancel any existing stream immediately
-    suggestionManager.cancelStream('handleInput_newInput');
-    
-    // Clear current suggestion
-    suggestionManager.clearSuggestion();
-    
-    // Set active element
-    suggestionManager.activeInputElement = element;
-    
-    // Clear existing debounce timer and set a new one with a longer delay
-    // to prevent many requests while typing
-    clearTimeout(suggestionManager.debounceTimer);
-    suggestionManager.debounceTimer = setTimeout(() => {
-        // Only request a completion if:
-        // 1. We're not already streaming
-// 2. We haven't just canceled due to keystrokes (still actively typing)
-        if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
-            const textBeforeCaret = element.value.substring(0, element.selectionStart);
-            if (textBeforeCaret && textBeforeCaret.trim().length > 3) {
-                console.log('[MilashkaAI] Requesting completion after debounce');
-                requestCompletion(textBeforeCaret, element);
-            }
-        }
-    }, 700);
-}
-
-function isValidInputElement(element) {
-    return element.tagName === 'TEXTAREA' || 
-           (element.tagName === 'INPUT' && element.type === 'text') ||
-           element.isContentEditable;
-}
-
-document.addEventListener('input', handleInput, true);
-document.addEventListener('selectionchange', () => {
-    // Cancel suggestion if user selects text
-    const el = document.activeElement;
-    if (isValidInputElement(el) && (el.selectionStart !== el.selectionEnd)) {
-        suggestionManager.cancelStream();
-        suggestionManager.clearSuggestion();
+    if (editingUI.capture()) {
+        editingUI.showFloatingMenu(
+            event.clientX,
+            event.clientY + window.scrollY + 5
+        );
     }
 });
 
-// Cancel any ongoing stream on any keydown to ensure immediate abort and restart
-document.addEventListener('keydown', (e) => {
-    // Only cancel if focused on valid input
-    if (isValidInputElement(document.activeElement)) {
-        // Cancel stream on any keystroke but don't start a new one immediately
-        suggestionManager.cancelStream('globalKeydown');
-        
-        // Set a flag to indicate we just canceled due to keystroke
-        // This will delay the next completion request
-        suggestionManager.justCanceledByKeystroke = true;
-        
-        // Clear this flag after a short delay to allow completions again
-        setTimeout(() => {
-            suggestionManager.justCanceledByKeystroke = false;
-        }, 1500);
-    }
-});
-
-document.addEventListener('keydown', (event) => {
-    if (suggestionManager.currentSuggestion && 
-        suggestionManager.activeInputElement === event.target) {
-        if (event.key === 'Tab' || event.key === 'Enter') {
-            if (suggestionManager.acceptSuggestion()) {
-                event.preventDefault();
-                // After accepting, allow new completions
-                setTimeout(() => handleInput({ target: event.target }), 0);
-            }
-        } else if (event.key === 'Escape') {
-            suggestionManager.trackSuggestionFeedback(false);
-            suggestionManager.cancelStream();
-            suggestionManager.clearSuggestion();
-            event.preventDefault();
-        }
-    } else if (event.key === 'Escape' && suggestionManager.streamInProgress) {
-        // Allow Esc to always cancel the stream, even before first token
-        suggestionManager.cancelStream();
-        suggestionManager.clearSuggestion();
-        event.preventDefault();
-    }
-}, true);
-
-document.addEventListener('mouseup', (event) => {
-    const selectedText = window.getSelection().toString().trim();
-    if (selectedText.length > 0 && !editingUI.floatingMenu) {
-        const selection = window.getSelection();
-        if (selection.rangeCount > 0) {
-            editingUI.currentSelectionRange = selection.getRangeAt(0);
-            editingUI.showFloatingMenu(
-                event.clientX,
-                event.clientY + window.scrollY + 5,
-                selectedText
-            );
-        }
-    }
-});
-
-// Save the range and selection when text is selected
-let lastSelectedRange = null;
-
-document.addEventListener('mousedown', () => {
-    // Clear the last selection when clicking
-    lastSelectedRange = null;
-});
-
-document.addEventListener('selectionchange', () => {
-    const selection = window.getSelection();
-    if (selection.rangeCount > 0 && selection.toString().trim().length > 0) {
-        // Store the range when a selection is made
-        lastSelectedRange = selection.getRangeAt(0).cloneRange();
-    }
-});
-
+// Handle context menu edit requests
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "SHOW_EDIT_UI") {
-        const selectedText = request.selectedText;
-        if (selectedText && lastSelectedRange) {
-            // Restore the selection before showing the edit UI
+        if (editingUI.capture()) {
+            // Position menu near the selection
             const selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(lastSelectedRange);
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
             
-            // Get coordinates for the floating menu
-            const rect = lastSelectedRange.getBoundingClientRect();
             editingUI.showFloatingMenu(
-                rect.right > window.innerWidth - 200 ? rect.left : rect.right, 
-                rect.bottom + window.scrollY + 5,
-                selectedText
+                rect.right > window.innerWidth - 220 ? rect.left : rect.right,
+                rect.bottom + window.scrollY + 5
             );
-            
-            // Store the current selection range for later use
-            editingUI.currentSelectionRange = lastSelectedRange;
-        } else if (selectedText) {
-            // Fallback if no range was saved
-            editingUI.showFloatingMenu(10, window.scrollY + 10, selectedText);
         }
     }
 });
-
-// Cancel stream when tab loses focus or visibility
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        suggestionManager.cancelStream();
-    }
-}, true);
-
-// Cancel stream when input loses focus
-document.addEventListener('blur', (event) => {
-    if (event.target === suggestionManager.activeInputElement) {
-        suggestionManager.cancelStream();
-    }
-}, true);
-
-// Cancel stream when window loses focus
-window.addEventListener('blur', () => {
-    suggestionManager.cancelStream();
-}, true);
 
 // Clean up on page unload
 window.addEventListener('unload', () => {
-    suggestionManager.cancelStream();
-}, true);
+    editingUI.hideFloatingMenu();
+});

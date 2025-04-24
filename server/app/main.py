@@ -4,15 +4,23 @@ import faulthandler;
 
 faulthandler.enable()
 
-# Configure logging at the start of the file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)  # Log to stdout to ensure visibility in Docker
-    ]
-)
-logging.getLogger().setLevel(logging.INFO)  # Set root logger to INFO
+# Set up logging at the start of the file
+from app.core.logging_config import setup_logging
+logger = setup_logging()
+
+# Suppress third-party logs
+import logging
+for logger_name in [
+    'uvicorn.access',
+    'uvicorn.error',
+    'sentence_transformers',
+    'torch',
+    'tqdm',
+    'transformers',
+    'spacy',
+    'llama_cpp'
+]:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

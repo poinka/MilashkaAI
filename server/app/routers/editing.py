@@ -1,11 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
+import logging
 
 from app.core.config import settings
 from app.schemas.models import EditRequest, EditResponse
 from app.schemas.errors import ErrorResponse
 from app.core.editing import perform_text_edit
 from app.core.rag_retriever import retrieve_relevant_chunks
+
+# Configure module logger
+logger = logging.getLogger('app.routers.editing')
 
 router = APIRouter(
     responses={
@@ -24,11 +28,14 @@ async def edit_text(request: EditRequest):
     using RAG context for better understanding.
     """
     try:
+        logger.info(f"Processing edit request: prompt='{request.prompt}', text_length={len(request.selected_text)}")
+        
         # Get relevant context
         context_chunks = await retrieve_relevant_chunks(
             request.selected_text,
             settings.RAG_TOP_K
         )
+        logger.debug(f"Retrieved {len(context_chunks) if context_chunks else 0} context chunks")
 
         # Combine context chunks into a single string if needed by perform_text_edit
         context_text = "\n".join(chunk["text"] for chunk in context_chunks) if context_chunks else None
@@ -42,6 +49,10 @@ async def edit_text(request: EditRequest):
             min_confidence=settings.RAG_SIMILARITY_THRESHOLD
         )
 
+        logger.info(f"Edit completed successfully: confidence={result['confidence']:.2f}")
+        if result.get('warning'):
+            logger.warning(f"Edit warning: {result['warning']}")
+
         return EditResponse(
             edited_text=result["edited_text"],
             confidence=result["confidence"],
@@ -50,6 +61,7 @@ async def edit_text(request: EditRequest):
         )
 
     except Exception as e:
+        logger.error(f"Text editing failed: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Text editing failed: {str(e)}"

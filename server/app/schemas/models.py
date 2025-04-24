@@ -3,13 +3,16 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 class CompletionRequest(BaseModel):
-    current_text: str = Field(..., min_length=1, max_length=10000)
-    full_document_context: Optional[str] = Field(None, max_length=50000)
+    text: str = Field(..., min_length=1, max_length=10000)
     language: str = Field(default="ru", pattern="^(ru|en)$")
 
 class CompletionResponse(BaseModel):
-    suggestion: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    completion: str
+    metadata: Optional[Dict[str, Any]] = None
+
+class CompletionStreamResponse(BaseModel):
+    token: str
+    is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
 
 class EditRequest(BaseModel):

@@ -1,12 +1,56 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-  <title>MilashkaAI Settings</title>
+  <meta charset="UTF-8">
+  <title>Настройки Комплита</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>Settings</h1>
-  <!-- Add settings options here -->
+  <div class="options-container">
+    <h1>Настройки</h1>
+    
+    <section class="options-section">
+      <h2>Основные настройки</h2>
+      <div class="option-group">
+        <label for="language">Язык интерфейса:</label>
+        <select id="language">
+          <option value="ru" selected>Русский</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      
+      <div class="option-group">
+        <label for="model">Модель для анализа:</label>
+        <select id="model">
+          <option value="default" selected>Стандартная</option>
+          <option value="fast">Быстрая</option>
+          <option value="accurate">Точная</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="options-section">
+      <h2>Дополнительные настройки</h2>
+      <div class="option-group">
+        <label>
+          <input type="checkbox" id="auto-completion" checked>
+          Автоматическое дополнение текста
+        </label>
+      </div>
+      
+      <div class="option-group">
+        <label>
+          <input type="checkbox" id="voice-enabled" checked>
+          Включить голосовой ввод
+        </label>
+      </div>
+    </section>
+
+    <div class="button-group">
+      <button id="save-options" class="primary">Сохранить</button>
+      <button id="reset-options">Сбросить</button>
+    </div>
+  </div>
   <script src="options.js"></script>
 </body>
 </html>

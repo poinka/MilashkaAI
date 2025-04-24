@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "MilashkaAI Text Assistant",
+  "name": "__MSG_extName__",
   "version": "0.1.0",
-  "description": "AI-powered text completion and editing for system analysts.",
+  "description": "__MSG_extDescription__",
+  "default_locale": "ru",
   "permissions": [
     "activeTab",
     "storage",
@@ -23,7 +24,10 @@
   "action": {
     "default_popup": "ui/popup.html",
     "default_icon": {
-      "128": "icons/icon128.png"
+      "16": "icons/favicon.png",
+      "32": "icons/favicon.png",
+      "48": "icons/favicon.png",
+      "128": "icons/favicon.png"
     }
   },
   "options_ui": {
@@ -31,7 +35,10 @@
     "open_in_tab": false
   },
   "icons": {
-    "128": "icons/icon128.png"
+    "16": "icons/favicon.png",
+    "32": "icons/favicon.png",
+    "48": "icons/favicon.png",
+    "128": "icons/favicon.png"
   },
   "web_accessible_resources": [
     {

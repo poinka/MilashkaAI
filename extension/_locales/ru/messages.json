@@ -1,0 +1,94 @@
+{
+  "extName": {
+    "message": "Комплит",
+    "description": "Название расширения"
+  },
+  "extDescription": {
+    "message": "ИИ-помощник для автодополнения и редактирования текста системных аналитиков",
+    "description": "Описание расширения"
+  },
+  "uploadFiles": {
+    "message": "Загрузить файлы",
+    "description": "Кнопка загрузки файлов"
+  },
+  "dropFilesHere": {
+    "message": "Перетащите файлы сюда или нажмите для загрузки",
+    "description": "Текст зоны загрузки"
+  },
+  "supportedFormats": {
+    "message": "Поддерживаются: PDF, DOCX, TXT, Markdown",
+    "description": "Поддерживаемые форматы"
+  },
+  "searchDocs": {
+    "message": "Поиск по документам...",
+    "description": "Placeholder поиска документов"
+  },
+  "statusAll": {
+    "message": "Все статусы",
+    "description": "Фильтр - все статусы"
+  },
+  "statusProcessing": {
+    "message": "Обработка",
+    "description": "Статус - обработка"
+  },
+  "statusIndexed": {
+    "message": "Индексация завершена",
+    "description": "Статус - индексация завершена"
+  },
+  "statusError": {
+    "message": "Ошибка",
+    "description": "Статус - ошибка"
+  },
+  "uploadButtonText": {
+    "message": "Загрузить файлы ({count})",
+    "description": "Текст кнопки загрузки с количеством файлов"
+  },
+  "errorNoValidFiles": {
+    "message": "Нет допустимых файлов для загрузки",
+    "description": "Ошибка - нет валидных файлов"
+  },
+  "uploadSuccess": {
+    "message": "Файлы успешно загружены",
+    "description": "Успешная загрузка"
+  },
+  "uploadError": {
+    "message": "Ошибка при загрузке",
+    "description": "Ошибка загрузки"
+  },
+  "errorFileRead": {
+    "message": "Ошибка чтения файла",
+    "description": "Ошибка чтения файла"
+  },
+  "errorLoadDocs": {
+    "message": "Ошибка загрузки списка документов",
+    "description": "Ошибка загрузки документов"
+  },
+  "noDocuments": {
+    "message": "Нет загруженных документов",
+    "description": "Нет документов"
+  },
+  "deleteDocument": {
+    "message": "Удалить документ",
+    "description": "Подсказка кнопки удаления"
+  },
+  "errorDeleteDoc": {
+    "message": "Ошибка удаления документа",
+    "description": "Ошибка удаления"
+  },
+  "startRecording": {
+    "message": "Начать голосовой ввод",
+    "description": "Начало записи"
+  },
+  "stopRecording": {
+    "message": "Остановить запись",
+    "description": "Остановка записи"
+  },
+  "listening": {
+    "message": "Слушаю...",
+    "description": "Идет запись"
+  },
+  "errorVoiceStart": {
+    "message": "Ошибка запуска голосового ввода",
+    "description": "Ошибка голосового ввода"
+  }
+}

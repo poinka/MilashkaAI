@@ -1,4 +1,18 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Initialize text elements with translations
+    function getMsg(key) {
+        return chrome.i18n.getMessage(key) || key;
+    }
+
+    // Update all static UI elements with translations
+    document.title = getMsg('extName');
+    document.querySelector('h1').textContent = getMsg('extName');
+    document.querySelector('.drop-zone-text').innerHTML = `
+        ${getMsg('dropFilesHere')}<br>
+        <small>${getMsg('supportedFormats')}</small>
+    `;
+    
+    // UI Elements
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('file-input');
     const dropZone = document.getElementById('drop-zone');
@@ -11,6 +25,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('search-docs');
     const voiceToggle = document.getElementById('voice-toggle');
     const voiceFeedback = document.getElementById('voice-feedback');
+
+    // Update placeholder texts
+    if (searchInput) {
+        searchInput.placeholder = getMsg('searchDocs');
+    }
+
+    // Update status filter options
+    if (statusFilter) {
+        statusFilter.innerHTML = `
+            <option value="all">${getMsg('statusAll')}</option>
+            <option value="processing">${getMsg('statusProcessing')}</option>
+            <option value="indexed">${getMsg('statusIndexed')}</option>
+            <option value="error">${getMsg('statusError')}</option>
+        `;
+    }
 
     let selectedFiles = new Set();
     let isUploading = false;
@@ -60,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (validFiles.length === 0) {
-            showError('No valid files selected. Supported formats: PDF, DOCX, TXT, MD');
+            showError(getMsg('errorNoValidFiles'));
             return;
         }
 
@@ -71,7 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateUploadButton() {
         uploadButton.disabled = selectedFiles.size === 0;
-        uploadButton.textContent = `Upload ${selectedFiles.size} File${selectedFiles.size !== 1 ? 's' : ''}`;
+        uploadButton.textContent = getMsg('uploadButtonText').replace('{count}', selectedFiles.size);
     }
 
     function showFileList() {
@@ -117,14 +146,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 await uploadFile(file);
             }
             
-            showSuccess('All files uploaded successfully');
+            showSuccess(getMsg('uploadSuccess'));
             selectedFiles.clear();
             updateUploadButton();
             showFileList();
             loadDocumentList();
             
         } catch (error) {
-            showError('Upload failed: ' + error.message);
+            showError(getMsg('uploadError') + ': ' + error.message);
         } finally {
             isUploading = false;
             progressContainer.style.display = 'none';
@@ -136,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise((resolve, reject) => {
             reader.onload = async (e) => {
                 if (!(e.target.result instanceof ArrayBuffer)) {
-                    reject(new Error('File data is not an ArrayBuffer'));
+                    reject(new Error(getMsg('errorFileRead')));
                     return;
                 }
                 const uint8Array = new Uint8Array(e.target.result);
@@ -146,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         type: "UPLOAD_DOCUMENT",
                         filename: file.name,
                         filetype: file.type,
-                        fileData: Array.from(uint8Array) // Convert to array for serialization
+                        fileData: Array.from(uint8Array)
                     });
                     if (response.success) {
                         updateProgress((Array.from(selectedFiles).indexOf(file) + 1) / selectedFiles.size * 100);
@@ -158,7 +187,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     reject(error);
                 }
             };
-            reader.onerror = () => reject(new Error('File reading failed'));
+            reader.onerror = () => reject(new Error(getMsg('errorFileRead')));
             reader.readAsArrayBuffer(file);
         });
     }
@@ -168,35 +197,32 @@ document.addEventListener('DOMContentLoaded', () => {
         progressText.textContent = `${Math.round(percent)}%`;
     }
 
-    // --- Document List Handling ---
     async function loadDocumentList() {
         if (!docList) return;
 
-    try {
-        const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
-        
-        console.log('LIST_DOCUMENTS response:', response);
+        try {
+            const response = await chrome.runtime.sendMessage({ type: "LIST_DOCUMENTS" });
+            console.log('LIST_DOCUMENTS response:', response);
+            const documents = Array.isArray(response) ? response : response.documents;
 
-        // Check if response is a plain list
-        const documents = Array.isArray(response) ? response : response.documents;
-
-        if (Array.isArray(documents)) {
-            renderDocumentList(documents);
-        } else {
-            showError('Failed to load documents: Invalid documents array');
-            console.error('Invalid documents array:', documents);
-            docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
+            if (Array.isArray(documents)) {
+                renderDocumentList(documents);
+            } else {
+                showError(getMsg('errorLoadDocs'));
+                console.error('Invalid documents array:', documents);
+                docList.innerHTML = `<li class="no-documents">${getMsg('errorLoadDocs')}</li>`;
+            }
+        } catch (error) {
+            showError(getMsg('errorLoadDocs') + ': ' + error.message);
+            console.error('Load documents error:', error);
+            docList.innerHTML = `<li class="no-documents">${getMsg('errorLoadDocs')}</li>`;
         }
-    } catch (error) {
-        showError('Error loading documents: ' + error.message);
-        console.error('Load documents error:', error);
-        docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
     }
-}
+
     function renderDocumentList(documents) {
         if (!Array.isArray(documents)) {
             console.error('Invalid documents data:', documents);
-            docList.innerHTML = '<li class="no-documents">Error loading documents</li>';
+            docList.innerHTML = `<li class="no-documents">${getMsg('errorLoadDocs')}</li>`;
             return;
         }
     
@@ -204,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
         docList.innerHTML = '';
     
         if (filteredDocs.length === 0) {
-            docList.innerHTML = '<li class="no-documents">No documents found</li>';
+            docList.innerHTML = `<li class="no-documents">${getMsg('noDocuments')}</li>`;
             return;
         }
     
@@ -213,14 +239,13 @@ document.addEventListener('DOMContentLoaded', () => {
             li.innerHTML = `
                 <div class="doc-info">
                     <span class="doc-name">${doc.filename}</span>
-                    <span class="status-badge status-${doc.status}">${doc.status}</span>
+                    <span class="status-badge status-${doc.status}">${getMsg('status' + doc.status.charAt(0).toUpperCase() + doc.status.slice(1))}</span>
                 </div>
-                <button class="delete-doc" data-id="${doc.doc_id}">&times;</button>
+                <button class="delete-doc" data-id="${doc.doc_id}" title="${getMsg('deleteDocument')}">&times;</button>
             `;
             docList.appendChild(li);
         });
 
-        // Add delete handlers
         docList.querySelectorAll('.delete-doc').forEach(button => {
             button.onclick = async () => {
                 try {
@@ -231,13 +256,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     console.log(`Received delete response:`, response);
                     if (response.success) {
-                        loadDocumentList(); // Refresh list on success
+                        loadDocumentList();
                     } else {
-                        showError('Failed to delete document: ' + response.error);
+                        showError(getMsg('errorDeleteDoc') + ': ' + response.error);
                     }
                 } catch (error) {
                     console.error(`Error deleting document:`, error);
-                    showError('Error deleting document: ' + error.message);
+                    showError(getMsg('errorDeleteDoc') + ': ' + error.message);
                 }
             };
         });
@@ -273,11 +298,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.success) {
                 isRecording = true;
                 voiceToggle.classList.add('recording');
-                voiceToggle.querySelector('.voice-status').textContent = 'Stop Recording';
+                voiceToggle.querySelector('.voice-status').textContent = getMsg('stopRecording');
                 voiceFeedback.style.display = 'block';
-                voiceFeedback.textContent = 'Listening...';
+                voiceFeedback.textContent = getMsg('listening');
             } else {
-                showError('Failed to start voice input: ' + response.error);
+                showError(getMsg('errorVoiceStart') + ': ' + response.error);
             }
         });
     }
@@ -286,12 +311,11 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.runtime.sendMessage({ type: "STOP_VOICE_INPUT" }, (response) => {
             isRecording = false;
             voiceToggle.classList.remove('recording');
-            voiceToggle.querySelector('.voice-status').textContent = 'Start Voice Input';
+            voiceToggle.querySelector('.voice-status').textContent = getMsg('startRecording');
             voiceFeedback.style.display = 'none';
         });
     }
 
-    // --- UI Feedback ---
     function showError(message) {
         const toast = document.createElement('div');
         toast.className = 'toast error';
@@ -322,10 +346,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Listen for messages from background script
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.type === "VOICE_FEEDBACK") {
-            if (voiceFeedback && isRecording) {
-                voiceFeedback.textContent = request.text;
-            }
+        if (request.type === "VOICE_FEEDBACK" && voiceFeedback && isRecording) {
+            voiceFeedback.textContent = request.text;
         }
     });
 });
