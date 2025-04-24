@@ -23,6 +23,59 @@ except ImportError:
     logging.warning("markdown not installed. Run: pip install markdown")
     markdown = None
 
+async def extract_text_from_bytes(content_bytes: bytes, content_type: str) -> str:
+    filename = "uploaded_file"  # Placeholder since no file object
+    logging.info(f"Extracting text from bytes (type: {content_type})")
+
+    if content_type == "application/pdf":
+        if not pypdf:
+            raise RuntimeError("pypdf required for PDF processing.")
+        text = ""
+        try:
+            pdf_reader = pypdf.PdfReader(io.BytesIO(content_bytes))
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n\n"
+        except Exception as e:
+            logging.error(f"Error reading PDF bytes: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
+        return text.strip()
+
+    elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        if not docx:
+            raise RuntimeError("python-docx required for DOCX processing.")
+        try:
+            document = docx.Document(io.BytesIO(content_bytes))
+            text = "\n".join([para.text for para in document.paragraphs])
+        except Exception as e:
+            logging.error(f"Error reading DOCX bytes: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not parse DOCX: {e}")
+        return text.strip()
+
+    elif content_type == "text/plain":
+        try:
+            return content_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                return content_bytes.decode('latin-1')
+            except Exception as e:
+                logging.error(f"Error decoding TXT bytes: {e}")
+                raise HTTPException(status_code=400, detail="Could not decode text file.")
+
+    elif content_type == "text/markdown":
+        if not markdown:
+            raise RuntimeError("markdown required for Markdown processing.")
+        try:
+            html = markdown.markdown(content_bytes.decode('utf-8'))
+            import re
+            text = re.sub('<[^>]*>', '', html)
+            return text.strip()
+        except Exception as e:
+            logging.error(f"Error reading Markdown bytes: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not parse Markdown: {e}")
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
+        
 async def extract_text_from_file(file: UploadFile) -> str:
     content_type = file.content_type
     filename = file.filename or "unknown"

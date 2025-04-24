@@ -12,6 +12,9 @@ from app.schemas.models import DocumentMetadata
 from app.schemas.errors import ErrorResponse
 from app.core.rag_builder import build_rag_graph_from_text 
 from app.db.kuzudb_client import get_db_connection, KuzuDBClient
+from app.core.processing import extract_text_from_bytes
+from app.core.rag_builder import fetch_requirements
+
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -24,21 +27,6 @@ router = APIRouter(
         429: {"model": ErrorResponse}
     }
 )
-
-async def save_upload_file(file: UploadFile, id: str) -> str:
-    # Use the consistent path from settings
-    uploads_path = settings.UPLOADS_PATH
-    os.makedirs(uploads_path, exist_ok=True)
-    
-    ext = os.path.splitext(file.filename)[1]
-    unique_filename = f"{id}{ext}"
-    file_path = os.path.join(uploads_path, unique_filename)
-    
-    async with aiofiles.open(file_path, 'wb') as out_file:
-        content = await file.read()
-        await out_file.write(content)
-    
-    return file_path
 
 @router.post("/upload", 
     response_model=DocumentMetadata,
@@ -61,8 +49,15 @@ async def upload_document(
         )
 
     try:
+        # Read file content once
+        content_bytes = await file.read()
         doc_id = str(uuid.uuid4())
-        file_path = await save_upload_file(file, doc_id)
+        file_path = os.path.join(settings.UPLOADS_PATH, f"{doc_id}{ext}")
+        
+        # Save the file
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            await out_file.write(content_bytes)
+        
         now = datetime.utcnow()
         metadata = DocumentMetadata(
             doc_id=doc_id,
@@ -74,11 +69,14 @@ async def upload_document(
             error=None
         )
 
+        # Extract text from bytes (requires a helper function)
+        text = await extract_text_from_bytes(content_bytes, file.content_type)
+        
         background_tasks.add_task(
             build_rag_graph_from_text, 
             doc_id=doc_id, 
             filename=file.filename, 
-            text="Текст извлеченный из файла..." 
+            text=text
         )
 
         return metadata
@@ -310,3 +308,22 @@ async def delete_document(
             status_code=500,
             detail=f"Error deleting document: {str(e)}"
         )
+
+@router.get("/requirements/")
+async def get_requirements(
+    doc_id: str | None = None,
+    req_type: str | None = None,
+    db: KuzuDBClient = Depends(get_db_connection)
+):
+    """
+    Fetch requirements with associated chunks and entities.
+    
+    Args:
+        doc_id (str, optional): Filter by document ID.
+        req_type (str, optional): Filter by requirement type ('functional' or 'non-functional').
+    
+    Returns:
+        List of requirements with their details.
+    """
+    requirements = await fetch_requirements(doc_id=doc_id, req_type=req_type, db=db)
+    return requirements
