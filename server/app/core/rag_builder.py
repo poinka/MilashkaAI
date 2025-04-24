@@ -116,58 +116,20 @@ async def build_rag_graph_from_text(
             close_db = False
         conn = db
         embedding_pipeline = get_embedding_pipeline()
-        # Table DDLs
-        create_document_table = f"""
-        CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
-            doc_id STRING, filename STRING, processed_at STRING, status STRING,
-            created_at STRING, updated_at STRING, PRIMARY KEY (doc_id)
-        )"""
-        create_chunk_table = f"""
-        CREATE NODE TABLE IF NOT EXISTS {CHUNK_TABLE} (
-            chunk_id STRING,
-            doc_id STRING,
-            text STRING,
-            embedding FLOAT[],
-            PRIMARY KEY (chunk_id)
-        )"""
-        create_contains_rel = f"""
-        CREATE REL TABLE IF NOT EXISTS {CONTAINS_RELATIONSHIP} (
-            FROM {DOCUMENT_TABLE} TO {CHUNK_TABLE}
-        )"""
-        create_requirement_table = """
-        CREATE NODE TABLE IF NOT EXISTS Requirement (
-            req_id STRING, type STRING, description STRING, created_at STRING,
-            PRIMARY KEY (req_id)
-        )"""
-        create_entity_table = """
-        CREATE NODE TABLE IF NOT EXISTS Entity (
-            entity_id STRING, type STRING, name STRING, PRIMARY KEY (entity_id)
-        )"""
-        create_implements_rel = """
-        CREATE REL TABLE IF NOT EXISTS Implements (
-            FROM Requirement TO Entity
-        )"""
-        create_described_by_rel = """
-        CREATE REL TABLE IF NOT EXISTS DescribedBy (
-            FROM Requirement TO Chunk
-        )"""
-        create_references_rel = """
-        CREATE REL TABLE IF NOT EXISTS References (
-            FROM Requirement TO Document
-        )"""
-        for query in [create_document_table, create_chunk_table, create_contains_rel,
-                      create_requirement_table, create_entity_table,
-                      create_implements_rel, create_described_by_rel, create_references_rel]:
-            conn.execute(query)
+        # Table DDLs are now handled in KuzuDBClient.connect()
+
         now = datetime.now().isoformat()
+        # Ensure the document node exists or create it
+        # Use MERGE to avoid race conditions if multiple processes try to create
         conn.execute(f"""
-            CREATE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id, filename: $filename,
-                processed_at: $processed_at, status: $status,
-                created_at: $created_at, updated_at: $updated_at}})
+            MERGE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
+            ON CREATE SET d.filename = $filename, d.processed_at = $processed_at, d.status = $status, d.created_at = $created_at, d.updated_at = $updated_at
+            ON MATCH SET d.filename = $filename, d.processed_at = $processed_at, d.status = $status, d.updated_at = $updated_at
         """, {
             "doc_id": doc_id, "filename": filename, "processed_at": now,
-            "status": "indexed", "created_at": now, "updated_at": now
+            "status": "processing", "created_at": now, "updated_at": now # Initial status is processing
         })
+
         text_chunks = chunk_text(text)
         embeddings = embedding_pipeline.encode(text_chunks, batch_size=32)
         requirements = []
@@ -231,10 +193,21 @@ async def build_rag_graph_from_text(
         logging.info(f"Built RAG graph with {len(requirements)} requirements for doc_id: {doc_id}")
     except Exception as e:
         logging.error(f"Error building RAG graph: {e}", exc_info=True)
+        # Update status to error in DB
+        try:
+            if db is not None:
+                now = datetime.now().isoformat()
+                db.execute(f"""
+                    MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
+                    SET d.status = 'error', d.updated_at = $updated_at, d.error = $error_msg
+                """, {"doc_id": doc_id, "updated_at": now, "error_msg": str(e)})
+        except Exception as db_err:
+            logging.error(f"Failed to update document status to error: {db_err}")
         raise
     finally:
         if 'close_db' in locals() and close_db:
             db.close()
+
 
 async def reindex_document(
     doc_id: str,
@@ -248,44 +221,109 @@ async def reindex_document(
     conn = db
 
     # Find the uploaded file
-    uploads_dir = os.getenv("UPLOADS_DIR", settings.UPLOADS_PATH)
-    file_path = os.path.join(uploads_dir, f"{doc_id}")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"File for doc_id {doc_id} not found.")
+    # Use settings for uploads path
+    uploads_dir = settings.UPLOADS_PATH 
+    # Find the file by doc_id, trying common extensions
+    original_filename = None
+    try:
+        res = conn.execute(f"MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}}) RETURN d.filename", {"doc_id": doc_id})
+        if res.has_next():
+            original_filename = res.get_next()[0]
+    except Exception as e:
+        logging.warning(f"Could not retrieve original filename for {doc_id}: {e}")
+
+    file_path = None
+    if original_filename:
+        base_path = os.path.join(uploads_dir, doc_id)
+        ext = os.path.splitext(original_filename)[1]
+        potential_path = f"{base_path}{ext}"
+        if os.path.exists(potential_path):
+            file_path = potential_path
+        else: 
+             logging.warning(f"File with original extension not found at {potential_path}")
+             # Fallback: Check without extension or common ones if needed
+             if os.path.exists(base_path):
+                 file_path = base_path # Maybe saved without extension?
+                 logging.warning(f"Found file without extension at {base_path}")
+
+    if not file_path:
+         # Last resort: try globbing if filename wasn't found/retrieved
+        possible_files = [f for f in os.listdir(uploads_dir) if f.startswith(doc_id)]
+        if possible_files:
+            file_path = os.path.join(uploads_dir, possible_files[0])
+            logging.warning(f"Found file via globbing: {file_path}")
+        else:
+            raise HTTPException(status_code=404, detail=f"File for doc_id {doc_id} not found in {uploads_dir}.")
 
     try:
-        # Delete existing document and its chunks
+        # Delete existing document and its chunks/relationships
         conn.execute(f"""
             MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
-            OPTIONAL MATCH (d)-[:{CONTAINS_RELATIONSHIP}]->(c:{CHUNK_TABLE})
-            DETACH DELETE d, c
+            OPTIONAL MATCH (d)-[r]-()
+            DETACH DELETE d
         """, {"doc_id": doc_id})
+        logging.info(f"Deleted existing data for doc_id {doc_id} before reindexing.")
 
         # Simulate UploadFile for extract_text_from_file
         class DummyUploadFile:
-            def __init__(self, filename):
-                self.filename = filename
-                self.file = open(filename, "rb")
-                self.content_type = None
+            def __init__(self, filepath):
+                self.filename = os.path.basename(filepath)
+                self._file = open(filepath, "rb")
+                # Determine content type if possible, otherwise default
+                import mimetypes
+                self.content_type, _ = mimetypes.guess_type(filepath)
+                if not self.content_type:
+                    self.content_type = "application/octet-stream"
+
             async def read(self):
-                return self.file.read()
+                return self._file.read()
+
             async def seek(self, pos):
-                self.file.seek(pos)
+                self._file.seek(pos)
+                
+            async def close(self):
+                self._file.close()
 
         # Extract text and rebuild graph
         upload_file = DummyUploadFile(file_path)
-        text = await extract_text_from_file(upload_file)
-        await build_rag_graph_from_text(doc_id, os.path.basename(file_path), text)
+        try:
+            text = await extract_text_from_file(upload_file)
+            if not text or text.isspace():
+                 logging.warning(f"No text extracted during reindex for {doc_id}")
+                 # Create a minimal document entry with error status
+                 now = datetime.now().isoformat()
+                 conn.execute(f"""
+                    MERGE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
+                    ON CREATE SET d.filename = $filename, d.status = 'error', d.error = 'No text content found', d.created_at = $now, d.updated_at = $now
+                    ON MATCH SET d.filename = $filename, d.status = 'error', d.error = 'No text content found', d.updated_at = $now
+                 """, {"doc_id": doc_id, "filename": upload_file.filename, "now": now})
+                 return {"chunks_indexed": 0, "status": "error", "detail": "No text content found"}
+            
+            # Pass the db connection explicitly
+            await build_rag_graph_from_text(doc_id, upload_file.filename, text, db=conn) 
+        finally:
+            await upload_file.close()
 
-        # Count chunks
+        # Count chunks to confirm indexing
         result = conn.execute(f"""
             MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})-[:{CONTAINS_RELATIONSHIP}]->(c:{CHUNK_TABLE})
             RETURN count(c) as chunk_count
         """, {"doc_id": doc_id})
         chunks_count = result.get_next()[0] if result.has_next() else 0
+        logging.info(f"Reindexing for doc_id {doc_id} completed. Indexed {chunks_count} chunks.")
 
-        return {"chunks_indexed": chunks_count}
+        return {"chunks_indexed": chunks_count, "status": "indexed"}
 
     except Exception as e:
-        logging.error(f"Error reindexing document {doc_id}: {e}")
+        logging.error(f"Error reindexing document {doc_id}: {e}", exc_info=True)
+        # Attempt to update status to error
+        try:
+            now = datetime.now().isoformat()
+            conn.execute(f"""
+                MERGE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
+                ON CREATE SET d.status = 'error', d.error = $error_msg, d.created_at = $now, d.updated_at = $now
+                ON MATCH SET d.status = 'error', d.error = $error_msg, d.updated_at = $now
+            """, {"doc_id": doc_id, "error_msg": str(e), "now": now})
+        except Exception as db_err:
+            logging.error(f"Failed to update document status to error during reindex exception handling: {db_err}")
         raise HTTPException(status_code=500, detail=str(e))

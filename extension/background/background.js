@@ -285,21 +285,42 @@ class BackgroundService {
     }
 
     async handleEdit(request) {
-        const response = await this.fetchAPI('/editing/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                selected_text: request.selected_text,
-                prompt: request.prompt,
-                language: request.language || 'ru'
-            })
+        console.log('[MilashkaAI] Handling edit request:', {
+            prompt: request.prompt,
+            language: request.language,
+            textLength: request.selected_text ? request.selected_text.length : 0
         });
-        return {
-            edited_text: response.edited_text,
-            confidence: response.confidence,
-            alternatives: response.alternatives,
-            warning: response.warning
-        };
+        
+        try {
+            const apiUrl = await this.getApiUrl();
+            console.log('[MilashkaAI] Using API URL:', apiUrl);
+            
+            const response = await this.fetchAPI('/editing/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selected_text: request.selected_text,
+                    prompt: request.prompt,
+                    language: request.language || 'ru'
+                })
+            });
+            
+            console.log('[MilashkaAI] Edit API response:', response);
+            
+            if (!response.edited_text) {
+                console.warn('[MilashkaAI] Warning: API returned empty edited_text');
+            }
+            
+            return {
+                edited_text: response.edited_text,
+                confidence: response.confidence,
+                alternatives: response.alternatives,
+                warning: response.warning
+            };
+        } catch (error) {
+            console.error('[MilashkaAI] Error in handleEdit:', error);
+            throw error; // Re-throw to be caught by the message handler
+        }
     }
 
     async handleListDocuments() {

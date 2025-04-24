@@ -89,33 +89,6 @@ async def extract_text_from_file(file: UploadFile) -> str:
 
 async def process_uploaded_document(doc_id: str, file: UploadFile, db: KuzuDBClient = Depends(get_db)):
     logging.info(f"Processing document ID: {doc_id}, Filename: {file.filename}")
-
-    # Ensure Document and Chunk tables exist
-    try:
-        db.execute(
-            """CREATE NODE TABLE IF NOT EXISTS Document (
-                doc_id STRING,
-                filename STRING,
-                processed_at STRING,
-                status STRING,
-                created_at STRING,
-                updated_at STRING,
-                PRIMARY KEY (doc_id)
-            )"""
-        )
-        db.execute(
-            """CREATE NODE TABLE IF NOT EXISTS Chunk (
-                chunk_id STRING,
-                doc_id STRING,
-                text STRING,
-                embedding FLOAT[],
-                PRIMARY KEY (chunk_id)
-            )"""
-        )
-    except Exception as e:
-        logging.error(f"Failed to ensure tables: {e}")
-        raise HTTPException(status_code=500, detail="Database schema error")
-
     # Update status to extracting_text
     now = datetime.utcnow().isoformat()
     try:

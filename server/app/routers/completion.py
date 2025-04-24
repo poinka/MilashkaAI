@@ -99,8 +99,11 @@ async def stream_completion(request: CompletionRequest, db: KuzuDBClient = Depen
         if not context_chunks:
             logger.info("No relevant chunks found for the query")
         
+        logger.info(f"Starting streaming completion for: '{request.current_text[:30]}...'")
+        
         async def completion_generator():
             disconnected = False
+            token_count = 0
             try:
                 async for token in generate_completion_stream(
                     request.current_text,
@@ -110,9 +113,18 @@ async def stream_completion(request: CompletionRequest, db: KuzuDBClient = Depen
                     if disconnected:
                         logger.info("Client disconnected, stopping generation")
                         break
+                    
+                    token_count += 1
+                    logger.debug(f"Sending token {token_count}: '{token}'")
+                    
+                    # Send the token immediately with flush directive
                     yield f"data: {token}\n\n"
-                    # Allow other tasks to run and check client connection
-                    await asyncio.sleep(0)
+                    
+                    # Force a small wait to allow the client to process each token
+                    # This prevents buffering and ensures tokens are sent one by one
+                    await asyncio.sleep(0.01)
+                
+                logger.info(f"Completed streaming {token_count} tokens")
             except ConnectionResetError:
                 logger.warning("Client connection reset")
                 disconnected = True

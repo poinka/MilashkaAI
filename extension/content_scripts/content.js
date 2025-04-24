@@ -35,46 +35,35 @@ class SuggestionManager {
         this.suggestionElement = null;
         this.activeInputElement = null;
         this.debounceTimer = null;
-        this.DEBOUNCE_DELAY = 500;
+        this.DEBOUNCE_DELAY = 1000;  // Longer debounce to avoid too many requests
         this.lastUpdate = 0;
-        this.updateThrottle = 500; // ms
+        this.updateThrottle = 10;    // Faster UI updates for smoother token display
         this.abortController = null;
         this.currentRequestId = 0;
         this.streamInProgress = false;
+        this.justCanceledByKeystroke = false;  // Flag to prevent immediate restart
+        this.lastKeystrokeTime = 0;            // Track when user last typed
         // Bind methods to ensure correct 'this' context
         this.displaySuggestion = this.displaySuggestion.bind(this);
         this.cancelStream = this.cancelStream.bind(this);
     }
 
     showToast(message, type = 'info') {
-        const toast = document.createElement('div');
-        Object.assign(toast.style, {
-            position: 'fixed',
-            bottom: '20px',
-            right: '20px',
-            background: type === 'error' ? '#f44336' : '#4CAF50',
-            color: 'white',
-            padding: '12px 24px',
-            borderRadius: '4px',
-            zIndex: 10000,
-            opacity: 0,
-            transition: 'opacity 0.3s'
-        });
-        toast.textContent = message;
-        document.body.appendChild(toast);
-        // Trigger animation
-        setTimeout(() => toast.style.opacity = '1', 10);
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        // Notification functionality removed - only log to console
+        console.log(`[MilashkaAI Toast] ${type}: ${message}`);
+        // No UI elements created or shown
     }
 
-    cancelStream() {
+    cancelStream(source = 'unknown') {
+        console.log(`[MilashkaAI] cancelStream called from: ${source}`);
         if (this.abortController) {
+            // Save the stack trace before aborting
+            const stackTrace = new Error().stack;
+            console.log('[MilashkaAI] Abort controller stack:', stackTrace);
+            
             this.abortController.abort();
             this.abortController = null;
-            this.showToast('Completion cancelled');
+            console.log(`[MilashkaAI] Completion cancelled from: ${source}`);
         }
         if (this.debounceTimer) {
             clearTimeout(this.debounceTimer);
@@ -82,6 +71,18 @@ class SuggestionManager {
         }
         this.currentRequestId++;
         this.streamInProgress = false;
+        
+        // If cancellation is due to keystroke, mark it to prevent immediate restart
+        if (source === 'globalKeydown' || source === 'handleInput_newInput') {
+            this.justCanceledByKeystroke = true;
+            this.lastKeystrokeTime = Date.now();
+            
+            // Auto-reset after a delay
+            setTimeout(() => {
+                this.justCanceledByKeystroke = false;
+            }, 1500);
+        }
+        
         this.clearSuggestion();
     }
 
@@ -190,13 +191,41 @@ class SuggestionManager {
         this.activeInputElement = null;
     }
 
+    insertText(element, text) {
+        if (!element || !text) return;
+        
+        if (element.isContentEditable) {
+            // For contentEditable elements
+            const selection = window.getSelection();
+            if (selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+                range.deleteContents();
+                range.insertNode(document.createTextNode(text));
+                selection.collapseToEnd();
+            }
+        } else {
+            // For input and textarea elements
+            const start = element.selectionStart || 0;
+            const end = element.selectionEnd || 0;
+            const originalText = element.value || '';
+            
+            element.value = originalText.substring(0, start) + text + originalText.substring(end);
+            
+            // Set cursor position after the inserted text
+            element.selectionStart = element.selectionEnd = start + text.length;
+            
+            // Trigger input event to notify any listeners
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    }
+
     acceptSuggestion() {
         if (this.currentSuggestion && this.activeInputElement) {
             this.insertText(this.activeInputElement, this.currentSuggestion);
             this.trackSuggestionFeedback(true);
             this.clearSuggestion();
             // After accepting, allow new completions
-            this.cancelStream();
+            this.cancelStream('acceptSuggestion');
             return true;
         }
         return false;
@@ -358,8 +387,11 @@ this.floatingMenu.appendChild(inputWrapper);
 
         this.isProcessing = true;
         this.updateMenuState(true, 'Processing...');
+        
+        console.log('[MilashkaAI] Starting edit with prompt:', prompt);
 
         try {
+            console.log('[MilashkaAI] Sending edit request to background script');
             const response = await chrome.runtime.sendMessage({
                 type: "EDIT_TEXT",
                 selected_text: selectedText,
@@ -367,15 +399,20 @@ this.floatingMenu.appendChild(inputWrapper);
                 language: document.documentElement.lang || 'ru'
             });
 
+            console.log('[MilashkaAI] Received edit response:', response);
+
             if (response.success) {
+                console.log('[MilashkaAI] Edit successful, applying edit:', response.edited_text);
                 this.applyEdit(response.edited_text, response.confidence);
                 if (response.warning) {
                     this.showFeedback(response.warning, 'warning');
                 }
             } else {
-                throw new Error(response.error);
+                console.error('[MilashkaAI] Edit failed:', response.error);
+                throw new Error(response.error || 'Unknown error occurred');
             }
         } catch (error) {
+            console.error('[MilashkaAI] Edit error:', error);
             this.showFeedback(`Edit failed: ${error.message}`, 'error');
         } finally {
             this.isProcessing = false;
@@ -384,23 +421,56 @@ this.floatingMenu.appendChild(inputWrapper);
     }
 
     applyEdit(editedText, confidence) {
-        const selection = window.getSelection();
-        
-        if (selection.rangeCount > 0) {
-            const range = selection.getRangeAt(0);
+        try {
+            const selection = window.getSelection();
             
-            const temp = document.createElement('div');
-            temp.innerHTML = editedText;
-            
-            range.deleteContents();
-            range.insertNode(temp.firstChild);
-            
-            if (confidence < 0.7) {
-                this.showFeedback(
-                    'Low confidence in edit. Please review the changes.',
-                    'warning'
-                );
+            if (selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+                
+                // Delete the current selection contents
+                range.deleteContents();
+                
+                // Create a proper text node for the edited content
+                if (editedText) {
+                    // Check if the edited text contains HTML
+                    if (/<[a-z][\s\S]*>/i.test(editedText)) {
+                        // For HTML content
+                        const temp = document.createElement('div');
+                        temp.innerHTML = editedText;
+                        
+                        // Insert each child node from the temp div
+                        const fragment = document.createDocumentFragment();
+                        while (temp.firstChild) {
+                            fragment.appendChild(temp.firstChild);
+                        }
+                        range.insertNode(fragment);
+                    } else {
+                        // For plain text content
+                        const textNode = document.createTextNode(editedText);
+                        range.insertNode(textNode);
+                    }
+                    
+                    // Collapse the selection to the end of the inserted content
+                    selection.collapseToEnd();
+                    
+                    // Show confidence feedback if needed
+                    if (confidence < 0.7) {
+                        this.showFeedback(
+                            'Low confidence in edit. Please review the changes.',
+                            'warning'
+                        );
+                    } else {
+                        this.showFeedback('Edit applied successfully', 'info');
+                    }
+                } else {
+                    this.showFeedback('No edit content received', 'error');
+                }
+            } else {
+                this.showFeedback('Could not apply edit: no active selection', 'error');
             }
+        } catch (error) {
+            console.error('Error applying edit:', error);
+            this.showFeedback(`Failed to apply edit: ${error.message}`, 'error');
         }
     }
 
@@ -713,12 +783,14 @@ const editingUI = new EditingUI();
 const speechManager = new SpeechManager();
 
 async function requestCompletion(text, element) {
+    // Define language code at the top of the function to ensure it's available everywhere
+    const langCode = document.documentElement.lang || 'ru';
+    
     try {
-        suggestionManager.cancelStream();
+        suggestionManager.cancelStream('requestCompletion_start');
         const requestId = ++suggestionManager.currentRequestId;
         suggestionManager.abortController = new AbortController();
         suggestionManager.streamInProgress = true;
-        const langCode = document.documentElement.lang && document.documentElement.lang.startsWith('en') ? 'en' : 'ru';
         const apiUrl = window.MILASHKA_API_URL;
         
         const resp = await fetch(`${apiUrl}/completion/stream`, {
@@ -742,16 +814,20 @@ async function requestCompletion(text, element) {
             if (done) break;
             
             buffer += decoder.decode(value, { stream: true });
+            console.log(`[MilashkaAI] Received data chunk:`, buffer);
             const parts = buffer.split('\n\n');
             buffer = parts.pop() || '';
             
             for (const part of parts) {
+                console.log(`[MilashkaAI] Processing part:`, part);
                 if (part.startsWith('data: ')) {
                     const token = part.slice(6);
+                    console.log(`[MilashkaAI] Extracted token: '${token}'`);
                     if (token && document.activeElement === element && 
                         requestId === suggestionManager.currentRequestId) {
                         // Show each token immediately
                         suggestion += token;
+                        console.log(`[MilashkaAI] Displaying suggestion: '${suggestion.slice(-20)}...'`);
                         suggestionManager.displaySuggestion(element, suggestion);
                     }
                 }
@@ -759,23 +835,38 @@ async function requestCompletion(text, element) {
         }
     } catch (error) {
         console.error('Completion error:', error);
-        if (error.message.includes('Extension context invalidated')) {
+        if (error.message?.includes('Extension context invalidated')) {
             showContextInvalidatedError();
             return;
         }
-        suggestionManager.showToast('Failed to get completion', 'error');
+        
+        // Determine if this is a "normal" error that should be silenced
+        const isExpectedError = 
+            // AbortErrors are expected during normal typing
+            error.name?.includes('AbortError') || 
+            error.message?.includes('abort') ||
+            // DOMException often happens when streams are interrupted
+            error instanceof DOMException || 
+            // Also, the stream might have been canceled by us intentionally
+            !suggestionManager.streamInProgress || 
+            requestId !== suggestionManager.currentRequestId;
+            
+        // Only show error toast for meaningful errors, not for expected interruptions
+        if (!isExpectedError) {
+            console.warn('Showing error notification for:', error);
+            suggestionManager.showToast('Failed to get completion', 'error');
+        }
     } finally {
         suggestionManager.abortController = null;
         suggestionManager.streamInProgress = false;
     }
 
     // Fallback to non-streaming completion via background
-    const fallbackLang = langCode;
     try {
         const response = await chrome.runtime.sendMessage({
             type: 'GET_COMPLETION',
             current_text: text,
-            language: fallbackLang
+            language: langCode // Use the langCode defined outside the try block
         });
         if (response && response.success && response.suggestion) {
             suggestionManager.displaySuggestion(element, response.suggestion);
@@ -788,20 +879,35 @@ async function requestCompletion(text, element) {
 function handleInput(event) {
     const element = event.target;
     if (!isValidInputElement(element) || document.activeElement !== element || element.selectionStart !== element.selectionEnd) {
-        suggestionManager.cancelStream();
+        suggestionManager.cancelStream('handleInput_invalid');
         suggestionManager.clearSuggestion();
         return;
     }
-    suggestionManager.activeInputElement = element;
+    
+    // Cancel any existing stream immediately
+    suggestionManager.cancelStream('handleInput_newInput');
+    
+    // Clear current suggestion
     suggestionManager.clearSuggestion();
-    suggestionManager.cancelStream();
+    
+    // Set active element
+    suggestionManager.activeInputElement = element;
+    
+    // Clear existing debounce timer and set a new one with a longer delay
+    // to prevent many requests while typing
     clearTimeout(suggestionManager.debounceTimer);
     suggestionManager.debounceTimer = setTimeout(() => {
-        const textBeforeCaret = element.value.substring(0, element.selectionStart);
-        if (textBeforeCaret && textBeforeCaret.trim().length > 3) {
-            requestCompletion(textBeforeCaret, element);
+        // Only request a completion if:
+        // 1. We're not already streaming
+// 2. We haven't just canceled due to keystrokes (still actively typing)
+        if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
+            const textBeforeCaret = element.value.substring(0, element.selectionStart);
+            if (textBeforeCaret && textBeforeCaret.trim().length > 3) {
+                console.log('[MilashkaAI] Requesting completion after debounce');
+                requestCompletion(textBeforeCaret, element);
+            }
         }
-    }, 1000); // 1 second debounce
+    }, 700);
 }
 
 function isValidInputElement(element) {
@@ -817,6 +923,24 @@ document.addEventListener('selectionchange', () => {
     if (isValidInputElement(el) && (el.selectionStart !== el.selectionEnd)) {
         suggestionManager.cancelStream();
         suggestionManager.clearSuggestion();
+    }
+});
+
+// Cancel any ongoing stream on any keydown to ensure immediate abort and restart
+document.addEventListener('keydown', (e) => {
+    // Only cancel if focused on valid input
+    if (isValidInputElement(document.activeElement)) {
+        // Cancel stream on any keystroke but don't start a new one immediately
+        suggestionManager.cancelStream('globalKeydown');
+        
+        // Set a flag to indicate we just canceled due to keystroke
+        // This will delay the next completion request
+        suggestionManager.justCanceledByKeystroke = true;
+        
+        // Clear this flag after a short delay to allow completions again
+        setTimeout(() => {
+            suggestionManager.justCanceledByKeystroke = false;
+        }, 1500);
     }
 });
 
