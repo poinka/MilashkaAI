@@ -7,6 +7,7 @@ from datetime import datetime
 from app.db.kuzudb_client import get_db, KuzuDBClient
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 class SuggestionFeedback(BaseModel):
     suggestion_text: str
@@ -26,15 +27,29 @@ async def track_suggestion_feedback(feedback: SuggestionFeedback, db: KuzuDBClie
     """
     
     try:
-        # Use a dedicated graph for feedback tracking
-        graph_name = "suggestion_feedback"
-        graph = db.select_graph(graph_name)
-        
+        # First, ensure Feedback table exists
+        try:
+            db.execute("""
+                CREATE NODE TABLE IF NOT EXISTS Feedback (
+                    feedback_id STRING,
+                    suggestion_text STRING,
+                    document_context STRING,
+                    was_accepted BOOL,
+                    source STRING,
+                    language STRING,
+                    user_id STRING,
+                    timestamp STRING,
+                    PRIMARY KEY (feedback_id)
+                )
+            """)
+        except Exception as schema_err:
+            logger.warning(f"Could not ensure Feedback schema: {schema_err}")
+
         # Generate a unique ID for this feedback instance
         feedback_id = f"feedback_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
         
         # Create a feedback node with all relevant properties
-        result = graph.query("""
+        db.execute("""
             CREATE (f:Feedback {
                 feedback_id: $feedback_id,
                 suggestion_text: $suggestion_text,
@@ -46,7 +61,7 @@ async def track_suggestion_feedback(feedback: SuggestionFeedback, db: KuzuDBClie
                 timestamp: $timestamp
             })
             RETURN f.feedback_id
-        """, params={
+        """, {
             "feedback_id": feedback_id,
             "suggestion_text": feedback.suggestion_text,
             "document_context": feedback.document_context or "",
@@ -57,78 +72,18 @@ async def track_suggestion_feedback(feedback: SuggestionFeedback, db: KuzuDBClie
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Add metadata properties if provided
+        # Add metadata properties if provided (simplified)
         if feedback.metadata:
-            property_updates = []
             for key, value in feedback.metadata.items():
                 if isinstance(value, (str, int, float, bool)) or value is None:
-                    property_updates.append(f"f.{key} = ${key}")
-            
-            if property_updates:
-                set_clause = ", ".join(property_updates)
-                graph.query(f"""
-                    MATCH (f:Feedback {{feedback_id: $feedback_id}})
-                    SET {set_clause}
-                """, params={"feedback_id": feedback_id, **feedback.metadata})
-        
-        # Track entity relationships if document context is provided
-        if feedback.document_context:
-            try:
-                # Find entities mentioned in the suggestion
-                # This helps build connection between suggestion feedback and content
-                doc = get_nlp()(feedback.suggestion_text)
-                for ent in doc.ents:
-                    entity_name = ent.text
-                    entity_type = ent.label_
-                    
-                    # Create entity and relationship
-                    graph.query("""
-                        MATCH (f:Feedback {feedback_id: $feedback_id})
-                        MERGE (e:FeedbackEntity {name: $name, type: $type})
-                        MERGE (f)-[r:MENTIONS_ENTITY]->(e)
-                        SET r.count = COALESCE(r.count, 0) + 1
-                    """, params={
-                        "feedback_id": feedback_id,
-                        "name": entity_name,
-                        "type": entity_type
-                    })
-            except Exception as e:
-                logging.warning(f"Error extracting entities from suggestion: {e}")
-        
-        # Calculate and update acceptance statistics for similar suggestions
-        try:
-            # Find similar suggestions by exact text match
-            similar_results = graph.query("""
-                MATCH (f:Feedback)
-                WHERE f.suggestion_text = $text AND f.feedback_id <> $feedback_id
-                RETURN COUNT(f) as total,
-                       SUM(CASE WHEN f.was_accepted THEN 1 ELSE 0 END) as accepted
-            """, params={
-                "text": feedback.suggestion_text,
-                "feedback_id": feedback_id
-            })
-            
-            if similar_results.result_set and len(similar_results.result_set) > 0:
-                total = similar_results.result_set[0][0] or 0
-                accepted = similar_results.result_set[0][1] or 0
-                
-                if total > 0:
-                    acceptance_rate = accepted / total
-                    # Update statistics on the current feedback
-                    graph.query("""
-                        MATCH (f:Feedback {feedback_id: $feedback_id})
-                        SET f.similar_suggestions = $total,
-                            f.similar_accepted = $accepted,
-                            f.acceptance_rate = $rate
-                    """, params={
-                        "feedback_id": feedback_id,
-                        "total": total + 1,  # Include current feedback
-                        "accepted": accepted + (1 if feedback.was_accepted else 0),
-                        "rate": acceptance_rate
-                    })
-        except Exception as e:
-            logging.warning(f"Error calculating acceptance statistics: {e}")
-        
+                    try:
+                        db.execute(f"""
+                            MATCH (f:Feedback {{feedback_id: $feedback_id}})
+                            SET f.{key} = $value
+                        """, {"feedback_id": feedback_id, "value": value})
+                    except Exception as meta_err:
+                        logger.warning(f"Failed to set metadata property {key}: {meta_err}")
+
         return {
             "status": "success",
             "feedback_id": feedback_id,
@@ -136,7 +91,7 @@ async def track_suggestion_feedback(feedback: SuggestionFeedback, db: KuzuDBClie
         }
         
     except Exception as e:
-        logging.error(f"Error tracking suggestion feedback: {e}", exc_info=True)
+        logger.error(f"Error tracking suggestion feedback: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to track suggestion feedback: {str(e)}"
@@ -155,9 +110,6 @@ async def get_suggestion_statistics(
     """
     
     try:
-        graph_name = "suggestion_feedback"
-        graph = db.select_graph(graph_name)
-        
         # Build query based on filters
         match_clause = "MATCH (f:Feedback)"
         where_conditions = []
@@ -174,76 +126,33 @@ async def get_suggestion_statistics(
         where_clause = " WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
         # Get overall stats
-        overall_result = graph.query(f"""
+        overall_result = db.execute(f"""
             {match_clause}
             {where_clause}
-            WITH COUNT(f) AS total, 
-                 SUM(CASE WHEN f.was_accepted THEN 1 ELSE 0 END) AS accepted
-            RETURN total, accepted, CASE WHEN total > 0 THEN toFloat(accepted)/total ELSE 0 END AS acceptance_rate
-        """, params=params)
-        
-        # Get top accepted suggestions
-        top_accepted = graph.query(f"""
-            {match_clause}
-            {where_clause} AND f.was_accepted = true
-            WITH f.suggestion_text AS suggestion, COUNT(*) AS count
-            ORDER BY count DESC
-            LIMIT $limit
-            RETURN suggestion, count
-        """, params=params)
-        
-        # Get top rejected suggestions
-        top_rejected = graph.query(f"""
-            {match_clause}
-            {where_clause} AND f.was_accepted = false
-            WITH f.suggestion_text AS suggestion, COUNT(*) AS count
-            ORDER BY count DESC
-            LIMIT $limit
-            RETURN suggestion, count
-        """, params=params)
-        
+            RETURN COUNT(f) AS total, 
+                   COUNT(CASE WHEN f.was_accepted = true THEN 1 END) AS accepted
+        """, params)
+
         # Format results
-        overall = {
-            "total_suggestions": 0,
-            "accepted_count": 0,
-            "acceptance_rate": 0
-        }
-        
-        if overall_result.result_set and len(overall_result.result_set) > 0:
-            overall["total_suggestions"] = overall_result.result_set[0][0] or 0
-            overall["accepted_count"] = overall_result.result_set[0][1] or 0
-            overall["acceptance_rate"] = overall_result.result_set[0][2] or 0
-        
-        accepted_suggestions = []
-        for row in top_accepted.result_set:
-            if row[0]:  # Skip null values
-                accepted_suggestions.append({
-                    "text": row[0],
-                    "count": row[1] or 0
-                })
-        
-        rejected_suggestions = []
-        for row in top_rejected.result_set:
-            if row[0]:  # Skip null values
-                rejected_suggestions.append({
-                    "text": row[0],
-                    "count": row[1] or 0
-                })
+        total = 0
+        accepted = 0
+        if overall_result:
+            row = overall_result.fetchone()
+            if row:
+                total = row[0] if row[0] is not None else 0
+                accepted = row[1] if row[1] is not None else 0
         
         return {
-            "overall_statistics": overall,
-            "top_accepted": accepted_suggestions,
-            "top_rejected": rejected_suggestions
+            "overall_statistics": {
+                "total_suggestions": total,
+                "accepted_count": accepted,
+                "acceptance_rate": accepted / total if total > 0 else 0
+            }
         }
         
     except Exception as e:
-        logging.error(f"Error getting suggestion statistics: {e}", exc_info=True)
+        logger.error(f"Error getting suggestion statistics: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get suggestion statistics: {str(e)}"
         )
-
-def get_nlp():
-    """Helper function to access SpaCy NLP model"""
-    from app.core.rag_builder import nlp
-    return nlp

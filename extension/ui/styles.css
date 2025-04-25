@@ -1,3 +1,6 @@
+/* Import Montserrat from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600&display=swap');
+
 /* Base styling */
 :root {
   --main-text-color: #333;
@@ -10,10 +13,21 @@
   --border-radius: 8px;
   --button-radius: 6px;
   --notification-radius: 10px;
+  --font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-weight-normal: 500;
+  --font-weight-title: 600;
+}
+
+/* Heading styles with semi-bold font weight */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-title);
+  margin-top: 0;
 }
 
 .komplit-extension-popup {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-normal);
   margin: 0;
   padding: 16px;
   width: 400px;
@@ -25,7 +39,8 @@
 .komplit-suggestion,
 .komplit-floating-menu,
 .komplit-transcription {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-normal);
   color: var(--main-text-color);
 }
 
@@ -68,7 +83,7 @@
 /* Upload button integrated inside drop zone */
 #upload-button {
   position: absolute;
-  bottom: 10px;
+  bottom: -15px;
   left: 50%;
   transform: translateX(-50%);
   background-color: var(--background-color);
@@ -82,13 +97,8 @@
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-#upload-button:hover {
-  background-color: var(--highlight-color);
-  color: var(--background-color);
-}
-
 #upload-button:disabled {
-  opacity: 0.5;
+  color: var(--secondary-text-color);
   cursor: not-allowed;
 }
 
@@ -152,7 +162,9 @@
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  line-height: 1.4;
+  min-height: 48px;
 }
 
 .document-list li:last-child {
@@ -211,16 +223,13 @@
   padding: 8px 16px;
   border-radius: var(--button-radius);
   border: 1px solid var(--border-color);
-  background: var(--background-color);
-  color: var(--main-text-color);
+  background: var(--highlight-color); /* Changed to black (highlight color) by default */
+  color: var(--background-color); /* Changed to white (background color) for text */
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
-.voice-button:hover {
-  background: var(--highlight-color);
-  color: var(--background-color);
-}
+/* Removed hover effect since button is now always black */
 
 .voice-button.recording {
   background: var(--highlight-color);

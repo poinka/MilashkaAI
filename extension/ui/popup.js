@@ -283,37 +283,85 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Voice Input Handling ---
-    voiceToggle?.addEventListener('click', toggleVoiceInput);
+    let popupMediaRecorder = null;
+    let popupAudioChunks = [];
 
-    function toggleVoiceInput() {
+    voiceToggle?.addEventListener('click', async () => {
         if (isRecording) {
-            stopVoiceInput();
+            stopPopupVoiceInput();
         } else {
-            startVoiceInput();
+            startPopupVoiceInput();
+        }
+    });
+
+    async function startPopupVoiceInput() {
+        try {
+            voiceFeedback.innerHTML = '<img src="../icons/microphone.png" alt="Микрофон" style="width:18px;height:18px;vertical-align:middle;margin-right:6px;"> Запись...';
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            popupAudioChunks = [];
+            popupMediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+            popupMediaRecorder.onstart = () => {
+                isRecording = true;
+                voiceToggle.classList.add('recording');
+                voiceToggle.querySelector('.voice-status').textContent = 'Остановить запись';
+                logPopup('Recording started.');
+            };
+            popupMediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    popupAudioChunks.push(event.data);
+                    logPopup(`Audio chunk captured: ${event.data.size} bytes`);
+                }
+            };
+            popupMediaRecorder.onerror = (e) => {
+                logPopup('MediaRecorder error: ' + e.error, 'error');
+                showError('Ошибка записи: ' + e.error);
+            };
+            popupMediaRecorder.onstop = async () => {
+                isRecording = false;
+                voiceToggle.classList.remove('recording');
+                voiceToggle.querySelector('.voice-status').textContent = 'Начать голосовой ввод';
+                logPopup('Recording stopped. Sending audio for transcription...');
+                voiceFeedback.textContent = '⏳ Распознавание...';
+                const audioBlob = new Blob(popupAudioChunks, { type: 'audio/webm' });
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                chrome.runtime.sendMessage({
+                    type: 'TRANSCRIBE_AUDIO',
+                    audioData: Array.from(new Uint8Array(arrayBuffer)),
+                    audioType: 'audio/webm',
+                    language: document.documentElement.lang || 'ru'
+                }, (response) => {
+                    if (response && response.transcription) {
+                        logPopup('Transcription received: ' + response.transcription);
+                        voiceFeedback.textContent = response.transcription;
+                    } else {
+                        logPopup('Transcription failed: ' + (response && response.error), 'error');
+                        showError('Ошибка распознавания: ' + (response && response.error));
+                        voiceFeedback.textContent = 'Ошибка распознавания.';
+                    }
+                });
+            };
+            popupMediaRecorder.start();
+        } catch (error) {
+            logPopup('Microphone access denied or error: ' + error.message, 'error');
+            showError('Нет доступа к микрофону: ' + error.message);
+            voiceFeedback.textContent = 'Нет доступа к микрофону.';
         }
     }
 
-    function startVoiceInput() {
-        chrome.runtime.sendMessage({ type: "START_VOICE_INPUT" }, (response) => {
-            if (response.success) {
-                isRecording = true;
-                voiceToggle.classList.add('recording');
-                voiceToggle.querySelector('.voice-status').textContent = getMsg('stopRecording');
-                voiceFeedback.style.display = 'block';
-                voiceFeedback.textContent = getMsg('listening');
-            } else {
-                showError(getMsg('errorVoiceStart') + ': ' + response.error);
-            }
-        });
+    function stopPopupVoiceInput() {
+        if (popupMediaRecorder && isRecording) {
+            popupMediaRecorder.stop();
+            popupMediaRecorder.stream.getTracks().forEach(track => track.stop());
+            logPopup('Stopped recording and released microphone.');
+        }
     }
 
-    function stopVoiceInput() {
-        chrome.runtime.sendMessage({ type: "STOP_VOICE_INPUT" }, (response) => {
-            isRecording = false;
-            voiceToggle.classList.remove('recording');
-            voiceToggle.querySelector('.voice-status').textContent = getMsg('startRecording');
-            voiceFeedback.style.display = 'none';
-        });
+    function logPopup(message, type = 'info') {
+        if (type === 'error') {
+            console.error('[MilashkaAI][Popup]', message);
+        } else {
+            console.log('[MilashkaAI][Popup]', message);
+        }
     }
 
     function showError(message) {

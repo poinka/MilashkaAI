@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python
 
 COPY app/ app/
 
-RUN mkdir -p uploads /models data
+RUN mkdir -p /app/uploads /models data
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

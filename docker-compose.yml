@@ -10,8 +10,8 @@ services:
       - ./uploads:/app/uploads
       - ./models:/models
       - kuzu_data:/data/kuzu
-      - huggingface_cache:/root/.cache/huggingface  # Add this line
-      - torch_cache:/root/.cache/torch  # Add this line
+      - huggingface_cache:/root/.cache/huggingface
+      - torch_cache:/root/.cache/torch
 
 
 volumes:

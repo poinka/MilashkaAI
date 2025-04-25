@@ -37,7 +37,7 @@ ENV/
 Thumbs.db
 
 # Project specific
-uploads/
+app/uploads/
 *.log
 .git/
 .gitignore

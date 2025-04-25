@@ -17,7 +17,7 @@ class TaskQueue {
 
         this.isProcessing = true;
         const task = this.queue[0];
-
+        
         try {
             await this.executeWithRetry(task);
             this.queue.shift();
@@ -52,6 +52,13 @@ class BackgroundService {
         this.taskQueue = new TaskQueue();
         this.activeConnections = new Map();
         this.setupAPI();
+        // Register context menu when the extension is installed/updated
+        chrome.runtime.onInstalled.addListener(() => {
+            console.log('Extension installed or updated: Setting up context menus');
+            this.setupContextMenus();
+        });
+        
+        // Also set up context menus on startup to ensure they're always available
         this.setupContextMenus();
     }
 
@@ -77,28 +84,61 @@ class BackgroundService {
     }
 
     setupContextMenus() {
+        // First remove all existing context menus
         chrome.contextMenus.removeAll(() => {
-            chrome.contextMenus.create({
-                id: "milashkaEdit",
-                title: "Edit with MilashkaAI...",
-                contexts: ["selection"]
-            });
+            console.log('Context menus cleared, creating new ones');
+            
+            // Create the edit menu with a more unique ID
+            const menuId = "milashkaAI_edit_" + Date.now();
+            
+            try {
+                chrome.contextMenus.create({
+                    id: menuId,
+                    title: "Редактировать с Комплитом...",
+                    contexts: ["selection"]
+                }, () => {
+                    // Check for any creation errors
+                    const error = chrome.runtime.lastError;
+                    if (error) {
+                        console.error('Context menu creation error:', error);
+                    } else {
+                        console.log('Context menu created successfully with ID:', menuId);
+                    }
+                });
+                
+                // Store the ID for later reference
+                this.editMenuId = menuId;
+            } catch (e) {
+                console.error('Failed to create context menu:', e);
+            }
         });
 
-        chrome.contextMenus.onClicked.addListener((info, tab) => {
-            if (info.menuItemId === "milashkaEdit" && info.selectionText) {
+        // Remove any existing listeners before adding a new one
+        if (this._menuClickHandler) {
+            chrome.contextMenus.onClicked.removeListener(this._menuClickHandler);
+        }
+        
+        // Create and store reference to the handler
+        this._menuClickHandler = (info, tab) => {
+            console.log('Context menu clicked:', info.menuItemId, 'with text:', info.selectionText);
+            // Match any Milashka edit menu ID
+            if (info.menuItemId && info.menuItemId.includes('milashkaAI_edit_') && info.selectionText) {
                 chrome.tabs.sendMessage(tab.id, {
                     type: "SHOW_EDIT_UI",
                     selectedText: info.selectionText
                 });
             }
-        });
+        };
+        
+        // Add the click listener
+        chrome.contextMenus.onClicked.addListener(this._menuClickHandler);
     }
 
     async handleMessage(request, sender, sendResponse) {
         const handlers = {
             GET_COMPLETION: () => this.handleCompletion(request),
             GET_COMPLETION_STREAM: () => this.handleCompletionStream(request),
+            READ_NEXT_CHUNK: () => this.handleReadNextChunk(request),
             UPLOAD_DOCUMENT: () => this.handleUpload(request),
             TRANSCRIBE_AUDIO: () => this.handleTranscription(request),
             EDIT_TEXT: () => this.handleEdit(request),
@@ -146,16 +186,29 @@ class BackgroundService {
     }
 
     async handleCompletion(request) {
-        const response = await this.fetchAPI('/completion/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                current_text: request.current_text,
-                full_document_context: request.full_document_context,
-                language: request.language || 'ru'
-            })
+        console.log('[MilashkaAI] Handling completion request:', {
+            text_length: request.current_text?.length,
+            text_sample: request.current_text?.substring(Math.max(0, (request.current_text?.length || 0) - 50)),
+            language: request.language || 'ru'
         });
-        return { suggestion: response.suggestion };
+        
+        try {
+            const response = await this.fetchAPI('/completion/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: request.current_text, // Ensure this matches server schema
+                    language: request.language || 'ru'
+                })
+            });
+            
+            console.log('[MilashkaAI] Completion API response:', response);
+            // Corrected field name from response.suggestion to response.completion
+            return { suggestion: response.completion }; 
+        } catch (error) {
+            console.error('[MilashkaAI] Completion API error:', error);
+            throw error;
+        }
     }
 
     async handleCompletionStream(request) {
@@ -185,8 +238,7 @@ class BackgroundService {
                     'Connection': 'keep-alive'
                 },
                 body: JSON.stringify({
-                    current_text: request.current_text,
-                    full_document_context: request.full_document_context,
+                    text: request.current_text,
                     language: request.language || 'ru'
                 })
             });
@@ -255,6 +307,77 @@ class BackgroundService {
         }
     }
 
+    // Handler for reading the next chunk from a streaming response
+    async handleReadNextChunk(request) {
+        console.log('[MilashkaAI] READ_NEXT_CHUNK called with request:', { 
+            id: request.id,
+            hasStream: !!request.stream,
+            hasReader: !!request.responseReader
+        });
+        
+        const streamId = request.id;
+        if (!streamId) {
+            console.error('[MilashkaAI] Stream ID missing in READ_NEXT_CHUNK request');
+            return { done: true, error: "Stream ID is required" };
+        }
+        
+        // Retrieve the active stream using the ID
+        // Since streams are stateful and this is cross-message,
+        // we'll store active streams in a map
+        if (!this.activeStreams) {
+            this.activeStreams = new Map();
+            console.log('[MilashkaAI] Initialized active streams map');
+        }
+        
+        const stream = this.activeStreams.get(streamId);
+        if (!stream) {
+            // Create new stream state if first request
+            if (request.stream && request.readNextChunk) {
+                this.activeStreams.set(streamId, {
+                    readNextChunk: request.readNextChunk
+                });
+                console.log(`[MilashkaAI] New stream created with ID: ${streamId}`);
+                return { id: streamId, done: false, messages: [] };
+            } else {
+                console.error('[MilashkaAI] Stream not found and no initialization data provided',
+                              { streamId, hasStream: !!request.stream, hasReadNextChunk: !!request.readNextChunk });
+                return { done: true, error: "Stream not found" };
+            }
+        }
+        
+        try {
+            // Use the stream's readNextChunk function to get the next chunk
+            console.log(`[MilashkaAI] Reading next chunk from stream ${streamId}`);
+            if (!stream.readNextChunk || typeof stream.readNextChunk !== 'function') {
+                console.error(`[MilashkaAI] Invalid stream object for ${streamId}, missing readNextChunk function`);
+                this.activeStreams.delete(streamId);
+                return { done: true, error: "Invalid stream object" };
+            }
+            
+            const result = await stream.readNextChunk();
+            
+            // Handle null or undefined result
+            if (!result) {
+                console.error(`[MilashkaAI] Stream ${streamId} returned null/undefined result`);
+                this.activeStreams.delete(streamId);
+                return { done: true, messages: [] };
+            }
+            
+            // If the stream is done, clean up
+            if (result.done) {
+                this.activeStreams.delete(streamId);
+                console.log(`[MilashkaAI] Stream ${streamId} completed and cleaned up`);
+            }
+            
+            return result;
+        } catch (error) {
+            // Clean up on error
+            this.activeStreams.delete(streamId);
+            console.error(`[MilashkaAI] Error reading from stream ${streamId}:`, error);
+            return { done: true, error: error.message || "Stream error" };
+        }
+    }
+
     async handleUpload(request) {
         if (!Array.isArray(request.fileData)) {
             console.error('Invalid fileData type:', request.fileData, 'Expected Array');
@@ -272,16 +395,32 @@ class BackgroundService {
     }
 
     async handleTranscription(request) {
+        console.log('Handling transcription request:', {
+            audioDataLength: request.audioData ? request.audioData.length : 0,
+            audioType: request.audioType,
+            language: request.language
+        });
+        
         const formData = new FormData();
-        const blob = new Blob([request.audioData], { type: request.audioType || 'audio/webm' });
-        formData.append('audio_file', blob);
+        const blob = new Blob([new Uint8Array(request.audioData)], { type: request.audioType || 'audio/webm' });
+        
+        // Append with correct field name 'file' as expected by the server
+        formData.append('file', blob, 'recording.webm');
         formData.append('language', request.language || 'ru');
 
-        const response = await this.fetchAPI('/voice/transcribe', {
-            method: 'POST',
-            body: formData
-        });
-        return { transcription: response.text };
+        try {
+            console.log('Sending audio to server for transcription...');
+            const response = await this.fetchAPI('/voice/transcribe', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log('Transcription response:', response);
+            return { transcription: response.text };
+        } catch (error) {
+            console.error('Transcription error:', error);
+            throw error;
+        }
     }
 
     async handleEdit(request) {
@@ -373,36 +512,79 @@ class BackgroundService {
     }
 
     async handleStartVoice(tabId) {
-        if (!tabId) return { error: "No active tab" };
-        
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const connection = {
-            stream: mediaStream,
-            recorder: new MediaRecorder(mediaStream)
-        };
+        try {
+            // Handle popup recording (popup doesn't have tabId)
+            const isPopup = !tabId || tabId === -1;
+            
+            console.log(`Starting voice input for ${isPopup ? 'popup' : 'tab ' + tabId}`);
+            
+            const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: true,
+                video: false
+            });
+            
+            console.log('Media stream obtained:', mediaStream.id);
+            
+            const connection = {
+                stream: mediaStream,
+                recorder: new MediaRecorder(mediaStream, {
+                    mimeType: 'audio/webm'
+                })
+            };
 
-        this.activeConnections.set(tabId, connection);
-        
-        connection.recorder.ondataavailable = async (event) => {
-            if (event.data.size > 0) {
-                try {
-                    const response = await this.handleTranscription({
-                        audioData: await event.data.arrayBuffer(),
-                        audioType: event.data.type
-                    });
-                    
-                    chrome.tabs.sendMessage(tabId, {
-                        type: "VOICE_FEEDBACK",
-                        text: response.transcription
-                    });
-                } catch (error) {
-                    console.error("Transcription error:", error);
+            const connectionId = isPopup ? 'popup' : tabId;
+            this.activeConnections.set(connectionId, connection);
+            
+            console.log(`Created MediaRecorder for ${connectionId}`, connection.recorder.state);
+            
+            // Set up data handling
+            connection.recorder.ondataavailable = async (event) => {
+                console.log(`Got audio data: ${event.data.size} bytes`);
+                
+                if (event.data.size > 0) {
+                    try {
+                        console.log('Processing audio chunk for transcription');
+                        const response = await this.handleTranscription({
+                            audioData: await event.data.arrayBuffer(),
+                            audioType: event.data.type
+                        });
+                        
+                        console.log('Transcription result:', response.transcription);
+                        
+                        // Send transcription back to UI
+                        if (isPopup) {
+                            // For popup UI
+                            chrome.runtime.sendMessage({
+                                type: "VOICE_FEEDBACK",
+                                text: response.transcription
+                            });
+                        } else {
+                            // For content script in tab
+                            chrome.tabs.sendMessage(tabId, {
+                                type: "VOICE_FEEDBACK",
+                                text: response.transcription
+                            });
+                        }
+                    } catch (error) {
+                        console.error("Transcription error:", error);
+                    }
                 }
-            }
-        };
-
-        connection.recorder.start(1000);
-        return { success: true };
+            };
+            
+            // Handle recording errors
+            connection.recorder.onerror = (error) => {
+                console.error('MediaRecorder error:', error);
+            };
+            
+            // Start recording
+            connection.recorder.start(2000); // Send data every 2 seconds
+            console.log('MediaRecorder started:', connection.recorder.state);
+            
+            return { success: true };
+        } catch (error) {
+            console.error('Failed to start voice recording:', error);
+            return { error: error.message || "Failed to access microphone" };
+        }
     }
 
     async handleTrackSuggestion(request) {
@@ -426,14 +608,27 @@ class BackgroundService {
     }
 
     handleStopVoice(tabId) {
-        if (!tabId) return { error: "No active tab" };
+        // Handle both popup and tab recording sessions
+        const connectionId = !tabId || tabId === -1 ? 'popup' : tabId;
+        console.log(`Stopping voice input for ${connectionId}`);
         
-        const connection = this.activeConnections.get(tabId);
+        const connection = this.activeConnections.get(connectionId);
         if (connection) {
-            connection.recorder.stop();
-            connection.stream.getTracks().forEach(track => track.stop());
-            this.activeConnections.delete(tabId);
+            try {
+                console.log('Stopping MediaRecorder');
+                connection.recorder.stop();
+                console.log('Stopping media tracks');
+                connection.stream.getTracks().forEach(track => track.stop());
+                this.activeConnections.delete(connectionId);
+                console.log('Recording stopped and resources cleaned up');
+            } catch (error) {
+                console.error('Error stopping voice recording:', error);
+                return { success: false, error: error.message };
+            }
+        } else {
+            console.warn(`No active connection found for ${connectionId}`);
         }
+        
         return { success: true };
     }
 
@@ -441,7 +636,26 @@ class BackgroundService {
         try {
             const apiUrl = await this.getApiUrl();
             const url = `${apiUrl}${endpoint}`;
-            console.log(`Fetching from ${url}`);
+            
+            // Log more details about the request payload for debugging
+            if (endpoint.includes('completion')) {
+                console.log(`Fetching from ${url}`);
+                if (options.body) {
+                    try {
+                        const bodyData = JSON.parse(options.body);
+                        console.log('Request payload:', {
+                            current_text_length: bodyData.current_text?.length,
+                            current_text_sample: bodyData.current_text?.substring(Math.max(0, (bodyData.current_text?.length || 0) - 50)),
+                            has_full_context: !!bodyData.full_document_context,
+                            language: bodyData.language
+                        });
+                    } catch (e) {
+                        console.log('Request body (non-JSON):', options.body);
+                    }
+                }
+            } else {
+                console.log(`Fetching from ${url}`);
+            }
             
             // Set timeout and implement retry mechanism for network errors
             const controller = new AbortController();

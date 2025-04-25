@@ -18,7 +18,8 @@ IMPLEMENTS_RELATIONSHIP = "Implements"
 
 def get_db():
     """FastAPI dependency that yields a KuzuDBClient (with .execute())."""
-    client = KuzuDBClient("/data/kuzu_db")
+    from app.core.config import settings
+    client = KuzuDBClient(settings.KUZUDB_PATH)
     try:
         client.connect()
         yield client
@@ -43,9 +44,9 @@ class KuzuDBClient:
         if not self.kuzu_db:
             self.kuzu_db = KuzuDB(self.db_path)
             self.conn = Connection(self.kuzu_db)
-            # Ensure core tables exist on connect
+
             try:
-                # Node tables
+                # Node tables with CONSISTENT schema - no created_at in CHUNK_TABLE
                 self.conn.execute(f"""
                     CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
                         doc_id STRING,
@@ -58,18 +59,17 @@ class KuzuDBClient:
                         PRIMARY KEY (doc_id)
                     )
                 """)
-                
+
                 self.conn.execute(f"""
                     CREATE NODE TABLE IF NOT EXISTS {CHUNK_TABLE} (
                         chunk_id STRING,
                         doc_id STRING,
                         text STRING,
                         embedding FLOAT[],
-                        created_at STRING,
                         PRIMARY KEY (chunk_id)
                     )
                 """)
-                
+
                 self.conn.execute(f"""
                     CREATE NODE TABLE IF NOT EXISTS {REQUIREMENT_TABLE} (
                         req_id STRING,
@@ -79,7 +79,7 @@ class KuzuDBClient:
                         PRIMARY KEY (req_id)
                     )
                 """)
-                
+
                 self.conn.execute(f"""
                     CREATE NODE TABLE IF NOT EXISTS {ENTITY_TABLE} (
                         entity_id STRING,

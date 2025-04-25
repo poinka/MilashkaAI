@@ -69,7 +69,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ### Text Editing
 1. Select text you want to edit
 2. Either:
-   - Right-click and select "Edit with MilashkaAI"
+   - Right-click and select "Редактировать с Комплитом"
    - Use the floating edit menu that appears
 3. Enter your edit request or use voice input
 4. Review and apply the changes

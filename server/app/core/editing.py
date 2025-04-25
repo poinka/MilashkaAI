@@ -57,7 +57,9 @@ async def perform_text_edit(
             stop=["<end_of_turn>"]
         )
         
-    #     edited_text = response['choices'][0]['message']['content'].strip()
+        # Ensure we extract the text from the response properly
+        edited_text = response['choices'][0]['message']['content'].strip()
+        logger.debug(f"Received edited text of length {len(edited_text)}")
         
         if not edited_text or "cannot fulfill" in edited_text.lower() or len(edited_text) < 2:
             logger.warning("LLM produced invalid or empty edit")

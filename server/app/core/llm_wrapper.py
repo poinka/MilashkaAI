@@ -85,8 +85,12 @@ class LLMWrapper:
                 logger.info(f"[LLM-{request_id}] Parameters: {', '.join(param_log)}")
             logger.info(f"[LLM-{request_id}] ===== INPUT END =====")
             
-            # Get response
-            response = self.model.create_chat_completion(messages=messages, **kwargs)
+            # Get response - remove request_id from kwargs to prevent errors
+            llm_kwargs = kwargs.copy()
+            if 'request_id' in llm_kwargs:
+                llm_kwargs.pop('request_id')
+                
+            response = self.model.create_chat_completion(messages=messages, **llm_kwargs)
             
             # For non-streaming responses, log complete output
             if not stream_mode and response and 'choices' in response and response['choices']:

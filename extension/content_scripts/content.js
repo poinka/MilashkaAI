@@ -18,7 +18,7 @@ function showContextInvalidatedError() {
         top: '0',
         left: '0',
         right: '0',
-        backgroundColor: '#f44336',
+        backgroundColor: 'black',
         color: 'white',
         padding: '12px',
         textAlign: 'center',
@@ -163,20 +163,32 @@ class SuggestionManager {
             pointerEvents: 'none',
             font: style.font,
             whiteSpace: 'pre-wrap',
-            opacity: 0.7,
-            zIndex: 10,
+            opacity: 0.9, // Increased for better visibility
+            zIndex: 1000, // Increased z-index to make sure it's on top
             width: '100%',
             height: '100%',
             overflow: 'hidden',
         });
         // Show only the part after the user's input
-        const value = element.value;
-        let caretPos = element.selectionStart;
+        const value = element.value || '';
+        let caretPos = element.selectionStart || 0;
         let before = value.substring(0, caretPos);
-        let after = suggestionText.substring(caretPos);
+        
+        // Fix: suggestionText is already the completion part, don't try to substring it
+        let after = suggestionText;
+        
+        // Log for debugging
+        console.log('[MilashkaAI] Displaying suggestion:', {
+            valueLength: value.length,
+            caretPos,
+            suggestionText,
+            before: before.substring(Math.max(0, before.length - 10)),
+            after: after.substring(0, Math.min(after.length, 20))
+        });
+        
         // Render ghost text after caret
         this.suggestionElement.innerHTML =
-            `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span>${this.escapeHtml(after)}</span>`;
+            `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span style="color:#333;background-color:#f0f0f0;border-radius:2px;">${this.escapeHtml(after)}</span>`;
         wrapper.appendChild(this.suggestionElement);
         console.log('[MilashkaAI] displaySuggestion: overlay appended');
     }
@@ -351,7 +363,7 @@ class EditingUI {
         const voiceButton = document.createElement('button');
         Object.assign(voiceButton.style, {
             padding: '6px 12px',
-            backgroundColor: '#4CAF50',
+            backgroundColor: 'black',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
@@ -362,21 +374,55 @@ class EditingUI {
             justifyContent: 'center',
             minWidth: '36px'
         });
-        voiceButton.innerHTML = '🎙️';
+        
+        // Create and set microphone icon image
+        const micIcon = document.createElement('img');
+        const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
+        micIcon.src = micIconUrl;
+        // Store absolute URL to prevent path issues
+        micIcon.setAttribute('data-original-src', micIconUrl);
+        micIcon.style.width = '16px';
+        micIcon.style.height = '16px';
+        voiceButton.appendChild(micIcon);
+        
         voiceButton.onclick = () => {
             if (this.speechManager.isRecording) {
-                voiceButton.innerHTML = '🎙️';
-                voiceButton.style.backgroundColor = '#4CAF50';
+                // Reset to mic icon
+                voiceButton.innerHTML = '';
+                const micIcon = document.createElement('img');
+                const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
+                micIcon.src = micIconUrl;
+                // Store absolute URL to prevent path issues
+                micIcon.setAttribute('data-original-src', micIconUrl);
+                micIcon.style.width = '16px';
+                micIcon.style.height = '16px';
+                voiceButton.appendChild(micIcon);
+                voiceButton.style.backgroundColor = 'black';
                 this.speechManager.stopRecording();
             } else {
-                voiceButton.innerHTML = '⏹️';
-                voiceButton.style.backgroundColor = '#f44336';
+                voiceButton.innerHTML = '';
+                const stopIcon = document.createElement('img');
+                const stopIconUrl = chrome.runtime.getURL('icons/stop.png');
+                stopIcon.src = stopIconUrl;
+                stopIcon.setAttribute('data-original-src', stopIconUrl);
+                stopIcon.style.width = '16px';
+                stopIcon.style.height = '16px';
+                voiceButton.appendChild(stopIcon);
+                voiceButton.style.backgroundColor = 'black';
                 const input = this.menu.querySelector('.milashka-edit-input');
                 this.speechManager.startRecording(null, true, (formattedText) => {
                     if (input) {
                         input.value = formattedText;
-                        voiceButton.innerHTML = '🎙️';
-                        voiceButton.style.backgroundColor = '#4CAF50';
+                        // Reset to mic icon
+                        voiceButton.innerHTML = '';
+                        const micIcon = document.createElement('img');
+                        const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
+                        micIcon.src = micIconUrl;
+                        micIcon.setAttribute('data-original-src', micIconUrl);
+                        micIcon.style.width = '16px';
+                        micIcon.style.height = '16px';
+                        voiceButton.appendChild(micIcon);
+                        voiceButton.style.backgroundColor = 'black';
                     }
                 });
             }
@@ -412,7 +458,7 @@ class EditingUI {
         editButton.className = 'milashka-edit-button';
         Object.assign(editButton.style, {
             padding: '6px 12px',
-            backgroundColor: '#4CAF50',
+            backgroundColor: 'black',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
@@ -425,7 +471,7 @@ class EditingUI {
         const cancelButton = document.createElement('button');
         Object.assign(cancelButton.style, {
             padding: '6px 12px',
-            backgroundColor: '#f44336',
+            backgroundColor: 'black',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
@@ -592,9 +638,7 @@ class EditingUI {
             borderRadius: '4px',
             color: 'white',
             zIndex: '1000001',
-            backgroundColor: 
-                type === 'error' ? '#f44336' :
-                type === 'warning' ? '#ff9800' : '#4CAF50',
+            backgroundColor: 'black', // All notification types are now black
             boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
             animation: 'fadeInOut 3s ease-in-out'
         });
@@ -623,154 +667,92 @@ class EditingUI {
 
 class SpeechManager {
     constructor() {
-        this.recognition = null;
         this.isRecording = false;
         this.transcriptionElement = null;
         this.finalTranscription = '';
-        this.interimTranscription = '';
+        this.mediaRecorder = null;
+        this.audioChunks = [];
         this.targetElement = null;
         this.isEditMode = false;
         this.editCallback = null;
-        this.setupSpeechRecognition();
+        this.listenerRegistered = false;
     }
 
-    setupSpeechRecognition() {
-        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-            console.warn('Web Speech API is not supported in this browser');
-            return;
-        }
-
-        // Create SpeechRecognition object
-        const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-        this.recognition = new SpeechRecognitionAPI();
-        
-        // Configure recognition
-        this.recognition.continuous = true;
-        this.recognition.interimResults = true;
-        this.recognition.maxAlternatives = 1;
-        
-        // Set language dynamically
-        this.recognition.lang = document.documentElement.lang === 'ru' ? 'ru-RU' : 'en-US';
-        
-        // Set up event listeners
-        this.recognition.onstart = () => {
-            this.isRecording = true;
-            console.log('Speech recognition started');
-        };
-        
-        this.recognition.onend = () => {
-            this.isRecording = false;
-            console.log('Speech recognition ended');
-            this.removeTranscriptionElement();
-            
-            // Send final transcription to server for formatting if needed
-            if (this.finalTranscription) {
-                this.sendToServerForFormatting();
-            }
-        };
-
-        this.recognition.onresult = (event) => {
-            this.interimTranscription = '';
-            let finalTranscript = '';
-            
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    finalTranscript += event.results[i][0].transcript;
-                } else {
-                    this.interimTranscription += event.results[i][0].transcript;
-                }
-            }
-
-            if (finalTranscript) {
-                this.finalTranscription += ' ' + finalTranscript;
-                this.finalTranscription = this.finalTranscription.trim();
-            }
-            
-            this.updateTranscriptionDisplay();
-        };
-        
-        this.recognition.onerror = (event) => {
-            console.error('Speech recognition error:', event.error);
-            this.removeTranscriptionElement();
-        };
-    }
-    
-    startRecording(targetElement = null, isEditMode = false, callback = null) {
-        if (!this.recognition) {
-            console.error('Speech recognition not available');
-            this.showPermissionFeedback('Speech recognition not supported in this browser');
-            return false;
-        }
-        
+    async startRecording(targetElement = null, isEditMode = false, callback = null) {
         this.targetElement = targetElement;
         this.isEditMode = isEditMode;
         this.editCallback = callback;
         this.finalTranscription = '';
-        this.interimTranscription = '';
-        
-        // Check if we need to request microphone permission
-        navigator.permissions.query({ name: 'microphone' }).then(permissionStatus => {
-            console.log('Microphone permission status:', permissionStatus.state);
-            
-            // Set up permission change listener
-            permissionStatus.onchange = () => {
-                console.log('Permission status changed to:', permissionStatus.state);
-                if (permissionStatus.state === 'granted') {
-                    this.showPermissionFeedback('Microphone access granted!', 'success');
-                } else if (permissionStatus.state === 'denied') {
-                    this.showPermissionFeedback('Microphone access denied. Please enable in your browser settings.', 'error');
+        this.audioChunks = [];
+        this.createTranscriptionElement();
+        this.log('Requesting microphone access...');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+            this.mediaRecorder.onstart = () => {
+                this.isRecording = true;
+                this.log('Recording started.');
+                this.showPermissionFeedback('Recording started.', 'success');
+            };
+            this.mediaRecorder.ondataavailable = async (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks.push(event.data);
+                    this.log(`Audio chunk captured: ${event.data.size} bytes`);
                 }
             };
-            
-            if (permissionStatus.state === 'denied') {
-                this.showPermissionFeedback('Microphone access denied. Please enable in your browser settings.', 'error');
-                return false;
-            }
-        });
-        
-        this.createTranscriptionElement();
-        
-        try {
-            this.recognition.start();
-            return true;
+            this.mediaRecorder.onerror = (e) => {
+                this.log('MediaRecorder error: ' + e.error, 'error');
+                this.showPermissionFeedback('Recording error: ' + e.error, 'error');
+            };
+            this.mediaRecorder.onstop = async () => {
+                this.isRecording = false;
+                this.log('Recording stopped. Sending audio for transcription...');
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                chrome.runtime.sendMessage({
+                    type: 'TRANSCRIBE_AUDIO',
+                    audioData: Array.from(new Uint8Array(arrayBuffer)),
+                    audioType: 'audio/webm',
+                    language: document.documentElement.lang || 'ru'
+                }, (response) => {
+                    if (response && response.transcription) {
+                        this.finalTranscription = response.transcription;
+                        this.updateTranscriptionDisplay();
+                        this.log('Transcription received: ' + response.transcription);
+                        if (this.isEditMode && this.editCallback) {
+                            this.editCallback(response.transcription);
+                        } else if (this.targetElement && isValidInputElement(this.targetElement)) {
+                            const start = this.targetElement.selectionStart || 0;
+                            const end = this.targetElement.selectionEnd || 0;
+                            const originalText = this.targetElement.value || '';
+                            this.targetElement.value = originalText.substring(0, start) + response.transcription + originalText.substring(end);
+                            this.targetElement.selectionStart = this.targetElement.selectionEnd = start + response.transcription.length;
+                            this.targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                            this.targetElement.focus();
+                        }
+                    } else {
+                        this.log('Transcription failed: ' + (response && response.error), 'error');
+                        this.showPermissionFeedback('Transcription failed: ' + (response && response.error), 'error');
+                    }
+                });
+            };
+            this.mediaRecorder.start();
         } catch (error) {
-            console.error('Error starting speech recognition:', error);
-            this.showPermissionFeedback('Could not start speech recognition. ' + error.message, 'error');
-            return false;
+            this.log('Microphone access denied or error: ' + error.message, 'error');
+            this.showPermissionFeedback('Microphone access denied or error: ' + error.message, 'error');
         }
     }
-    
-    showPermissionFeedback(message, type = 'warning') {
-        const feedback = document.createElement('div');
-        Object.assign(feedback.style, {
-            position: 'fixed',
-            top: '20px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            padding: '12px 24px',
-            borderRadius: '4px',
-            color: 'white',
-            zIndex: '1000001',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-            backgroundColor: type === 'error' ? '#f44336' :
-                           type === 'success' ? '#4CAF50' : '#ff9800'
-        });
-        
-        feedback.textContent = message;
-        document.body.appendChild(feedback);
-        
-        setTimeout(() => feedback.remove(), 5000);
-    }
-    
+
     stopRecording() {
-        if (this.recognition && this.isRecording) {
-            this.recognition.stop();
+        if (this.mediaRecorder && this.isRecording) {
+            this.mediaRecorder.stop();
+            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            this.log('Stopped recording and released microphone.');
         }
     }
-    
+
     createTranscriptionElement() {
         this.removeTranscriptionElement();
-        
         this.transcriptionElement = document.createElement('div');
         this.transcriptionElement.className = 'milashka-transcription';
         Object.assign(this.transcriptionElement.style, {
@@ -788,75 +770,48 @@ class SpeechManager {
             fontSize: '14px',
             lineHeight: '1.4'
         });
-        
         document.body.appendChild(this.transcriptionElement);
     }
-    
+
     updateTranscriptionDisplay() {
         if (!this.transcriptionElement) return;
-        
+        this.transcriptionElement.innerHTML = '';
         const finalSpan = document.createElement('span');
         finalSpan.textContent = this.finalTranscription;
-        
-        const interimSpan = document.createElement('span');
-        interimSpan.textContent = this.interimTranscription;
-        Object.assign(interimSpan.style, {
-            color: '#666',
-            fontStyle: 'italic'
-        });
-        
-        this.transcriptionElement.innerHTML = '';
-        if (this.finalTranscription) {
-            this.transcriptionElement.appendChild(finalSpan);
-        }
-        if (this.interimTranscription) {
-            if (this.finalTranscription) {
-                this.transcriptionElement.appendChild(document.createTextNode(' '));
-            }
-            this.transcriptionElement.appendChild(interimSpan);
-        }
+        this.transcriptionElement.appendChild(finalSpan);
     }
-    
+
     removeTranscriptionElement() {
         if (this.transcriptionElement) {
             this.transcriptionElement.remove();
             this.transcriptionElement = null;
         }
     }
-    
-    async sendToServerForFormatting() {
-        if (!this.finalTranscription.trim()) return;
-        
-        try {
-            const response = await chrome.runtime.sendMessage({
-                type: "FORMAT_TRANSCRIPTION",
-                text: this.finalTranscription,
-                language: document.documentElement.lang || 'ru'
-            });
-            
-            if (response.success) {
-                const formattedText = response.formatted_text;
-                
-                if (this.isEditMode && this.editCallback) {
-                    // For editing mode, call the callback with formatted text
-                    this.editCallback(formattedText);
-                } else if (this.targetElement && isValidInputElement(this.targetElement)) {
-                    // For direct input mode, insert text at cursor position
-                    const start = this.targetElement.selectionStart || 0;
-                    const end = this.targetElement.selectionEnd || 0;
-                    const originalText = this.targetElement.value || '';
-                    
-                    this.targetElement.value = originalText.substring(0, start) + formattedText + originalText.substring(end);
-                    
-                    this.targetElement.selectionStart = 
-                    this.targetElement.selectionEnd = start + formattedText.length;
-                    
-                    this.targetElement.dispatchEvent(new Event('input', { bubbles: true }));
-                    this.targetElement.focus();
-                }
-            }
-        } catch (error) {
-            console.error("Failed to format transcription:", error);
+
+    showPermissionFeedback(message, type = 'warning') {
+        const feedback = document.createElement('div');
+        Object.assign(feedback.style, {
+            position: 'fixed',
+            top: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '12px 24px',
+            borderRadius: '4px',
+            color: 'white',
+            zIndex: '1000001',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            backgroundColor: type === 'error' ? 'red' : 'black'
+        });
+        feedback.textContent = message;
+        document.body.appendChild(feedback);
+        setTimeout(() => feedback.remove(), 5000);
+    }
+
+    log(message, type = 'info') {
+        if (type === 'error') {
+            console.error('[MilashkaAI][SpeechManager]', message);
+        } else {
+            console.log('[MilashkaAI][SpeechManager]', message);
         }
     }
 }
@@ -884,25 +839,119 @@ document.addEventListener('input', async (event) => {
         clearTimeout(suggestionManager.debounceTimer);
     }
 
+    // Cancel any existing stream when the user types
+    if (suggestionManager.streamInProgress) {
+        suggestionManager.cancelStream('handleInput_newInput');
+    }
+
     // Set new debounce timer
     suggestionManager.debounceTimer = setTimeout(async () => {
+        console.log('[MilashkaAI] Autocomplete debounce triggered');
         if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
             const textBeforeCursor = element.value.substring(0, element.selectionStart);
+            console.log('[MilashkaAI] Text before cursor:', textBeforeCursor?.substring(Math.max(0, textBeforeCursor.length - 50)));
+            
             if (textBeforeCursor && textBeforeCursor.trim().length > 3) {
+                console.log('[MilashkaAI] Sending streaming completion request');
+                
+                // Set up for streaming
+                suggestionManager.streamInProgress = true;
+                suggestionManager.activeInputElement = element;
+                let lastSuggestionLength = 0;
+                
                 try {
-                    const response = await chrome.runtime.sendMessage({
-                        type: "GET_COMPLETION",
-                        text: textBeforeCursor,
+                    // Request streaming completion
+                    const streamResponse = await chrome.runtime.sendMessage({
+                        type: "GET_COMPLETION_STREAM",
+                        current_text: textBeforeCursor,
                         language: document.documentElement.lang || 'en'
                     });
                     
-                    if (response.success && response.completion) {
-                        suggestionManager.displaySuggestion(element, textBeforeCursor + response.completion);
+                    console.log('[MilashkaAI] Stream response initialized:', streamResponse);
+                    
+                    if (streamResponse && streamResponse.id) {
+                        // Create abort controller for this stream
+                        suggestionManager.abortController = new AbortController();
+                        
+                        // Store stream ID for debugging
+                        const streamId = streamResponse.id || 'unknown';
+                        console.log(`[MilashkaAI] Using stream ID: ${streamId}`);
+                        
+                        if (!streamId || streamId === 'unknown') {
+                            console.error('[MilashkaAI] Invalid stream ID received');
+                            suggestionManager.streamInProgress = false;
+                        }
+                        
+                        // Process stream tokens as they arrive
+                        while (!suggestionManager.abortController.signal.aborted) {
+                            try {
+                                if (!streamResponse || !streamResponse.id) {
+                                    console.error('[MilashkaAI] Missing stream ID for READ_NEXT_CHUNK');
+                                    break;
+                                }
+                                
+                                const data = await chrome.runtime.sendMessage({
+                                    type: "READ_NEXT_CHUNK",
+                                    id: streamResponse.id
+                                });
+                                
+                                if (!data) {
+                                    console.error('[MilashkaAI] Received empty response from READ_NEXT_CHUNK');
+                                    break;
+                                }
+                                
+                                if (data.done) {
+                                    console.log('[MilashkaAI] Stream complete');
+                                    break;
+                                }
+                                
+                                // Process and display each token as it arrives with visual feedback
+                                if (data.messages && data.messages.length > 0) {
+                                    const latestMessage = data.messages[data.messages.length - 1];
+                                    // Only update UI if suggestion actually changed
+                                    if (latestMessage.suggestion && 
+                                        latestMessage.suggestion.length > lastSuggestionLength) {
+                                        console.log('[MilashkaAI] Received token:', latestMessage.token);
+                                        lastSuggestionLength = latestMessage.suggestion.length;
+                                        // Only show the new completion, not the prompt + completion
+                                        let completion = latestMessage.suggestion;
+                                        if (completion.startsWith(textBeforeCursor)) {
+                                            completion = completion.slice(textBeforeCursor.length);
+                                        }
+                                        suggestionManager.displaySuggestion(element, completion);
+                                        // Briefly flash the suggestion to indicate new tokens (subtle visual feedback)
+                                        if (suggestionManager.suggestionElement) {
+                                            const originalOpacity = suggestionManager.suggestionElement.style.opacity;
+                                            suggestionManager.suggestionElement.style.opacity = '0.9';
+                                            setTimeout(() => {
+                                                if (suggestionManager.suggestionElement) {
+                                                    suggestionManager.suggestionElement.style.opacity = originalOpacity;
+                                                }
+                                            }, 100);
+                                        }
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('[MilashkaAI] Streaming completion error:', error);
+                                break;
+                            } finally {
+                                suggestionManager.streamInProgress = false;
+                            }
+                        }
                     }
                 } catch (error) {
-                    console.error('[MilashkaAI] Completion error:', error);
+                    console.error('[MilashkaAI] Streaming completion error:', error);
+                } finally {
+                    suggestionManager.streamInProgress = false;
                 }
+            } else {
+                console.log('[MilashkaAI] Text too short for completion');
             }
+        } else {
+            console.log('[MilashkaAI] Completion skipped - stream in progress:', 
+                        suggestionManager.streamInProgress, 
+                        'just canceled:', 
+                        suggestionManager.justCanceledByKeystroke);
         }
     }, 700);
 });
@@ -928,7 +977,11 @@ document.addEventListener('mouseup', (event) => {
         return;
     }
     
-    if (editingUI.capture()) {
+    // Only attempt to capture if there's actually a selection
+    const selection = window.getSelection();
+    const hasSelection = selection && selection.toString().trim().length > 0;
+    
+    if (hasSelection && editingUI.capture()) {
         editingUI.showFloatingMenu(
             event.clientX,
             event.clientY + window.scrollY + 5

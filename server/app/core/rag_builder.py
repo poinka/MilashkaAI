@@ -231,12 +231,13 @@ async def build_rag_graph_from_text(
         # Insert chunks and relationships
         for i, (chunked_text, embedding) in enumerate(zip(text_chunks, embeddings)):
             chunk_id = f"{doc_id}_chunk_{i}"
+            # Use a consistent schema without created_at field for chunks
             conn.execute(f"""
                 CREATE (c:{CHUNK_TABLE} {{chunk_id: $chunk_id, doc_id: $doc_id,
-                    text: $text, embedding: $embedding, created_at: $created_at}})
+                    text: $text, embedding: $embedding}})
             """, {
                 "chunk_id": chunk_id, "doc_id": doc_id, "text": chunked_text,
-                "embedding": embedding.tolist(), "created_at": now
+                "embedding": embedding.tolist()
             })
             conn.execute(f"""
                 MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}}),

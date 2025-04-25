@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     
     # Database configuration
     KUZUDB_PATH: str = os.getenv("KUZUDB_PATH", "/data/kuzu/db")
-    UPLOADS_PATH: str = os.getenv("UPLOADS_PATH", "uploads")
+    UPLOADS_PATH: str = os.getenv("UPLOADS_PATH", "/app/uploads")
     
     # Logging configuration
     LOG_LEVEL: str = "INFO"
@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # RAG settings
     RAG_TOP_K: int = 3
     RAG_SIMILARITY_THRESHOLD: float = 0.7
+    
+    # Document settings
+    MAX_DOCUMENT_SIZE: int = 20 * 1024 * 1024  # 20MB
+    SUPPORTED_FORMATS: list = [".pdf", ".docx", ".txt", ".md"]
     
     class Config:
         env_file = ".env"
