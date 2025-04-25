@@ -114,8 +114,6 @@ class KuzuDBClient:
                     )
                 """)
                 
-                logger.info("KùzuDB schema initialized successfully.")
-
             except Exception as e:
                 logger.error(f"Error ensuring core tables exist: {e}")
                 raise

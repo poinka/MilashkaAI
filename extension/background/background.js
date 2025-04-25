@@ -459,6 +459,7 @@ class BackgroundService {
             }
             
             return {
+                success: true,  // Add this line
                 edited_text: response.edited_text,
                 confidence: response.confidence,
                 alternatives: response.alternatives,
