@@ -169,11 +169,20 @@ class BackgroundService {
             }
         } catch (error) {
             console.error(`Error handling ${request.type}:`, error);
-            sendResponse({ success: false, error: error.message || "Operation failed" });
+            sendResponse({ 
+                error: error.message || 'Unknown error',
+                stack: error.stack 
+            });
         }
     }
 
     async handleFormatTranscription(request) {
+        console.log('[Complete] Formatting transcription:', {
+            text_length: request.text?.length,
+            text_sample: request.text?.substring(0, 50) + '...',
+            language: request.language || 'ru'
+        });
+        
         const response = await this.fetchAPI('/voice/format', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -182,7 +191,9 @@ class BackgroundService {
                 language: request.language || 'ru'
             })
         });
-        return { formatted_text: response.text };
+        
+        console.log('[Complete] Format response:', response);
+        return { formatted_text: response.completion }; // Changed from 'response.text' to match the CompletionResponse schema
     }
 
     async handleCompletion(request) {
@@ -247,44 +258,35 @@ class BackgroundService {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
+            // Define the stream object with readNextChunk and cancel
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullSuggestion = '';
             let buffer = '';
-            
-            return {
-                stream: true,
-                responseReader: reader,
+
+            const streamObj = {
                 readNextChunk: async () => {
                     try {
-                        resetTimeout(); // Reset timeout on each chunk read attempt
+                        resetTimeout();
                         const { value, done } = await reader.read();
-                        
                         if (done) {
                             if (timeoutId) clearTimeout(timeoutId);
                             return { done: true };
                         }
-
                         const chunk = decoder.decode(value, { stream: true });
                         buffer += chunk;
-                        
                         const messages = [];
                         const lines = buffer.split('\n\n');
                         buffer = lines.pop() || '';
-                        
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
                                 const token = line.slice(6);
                                 if (token) {
                                     fullSuggestion += token;
-                                    messages.push({
-                                        token,
-                                        suggestion: fullSuggestion
-                                    });
+                                    messages.push({ token, suggestion: fullSuggestion });
                                 }
                             }
                         }
-                        
                         return { messages, done: false };
                     } catch (error) {
                         if (timeoutId) clearTimeout(timeoutId);
@@ -301,6 +303,13 @@ class BackgroundService {
                     reader.cancel();
                 }
             };
+
+            // Register stream in map and return its ID
+            if (!this.activeStreams) this.activeStreams = new Map();
+            const streamId = `stream-${Date.now()}`;
+            this.activeStreams.set(streamId, streamObj);
+            console.log(`[Complete] Created stream with ID: ${streamId}`);
+            return { id: streamId };
         } catch (error) {
             console.error('[Complete] Stream error:', error);
             throw error;
@@ -395,17 +404,40 @@ class BackgroundService {
     }
 
     async handleTranscription(request) {
-        console.log('Handling transcription request:', {
-            audioDataLength: request.audioData ? request.audioData.length : 0,
-            audioType: request.audioType,
-            language: request.language
-        });
+        console.log('Handling transcription request with audio type:', request.audioType, 
+            'and language:', request.language);
+        
+        if (!request.audioData || request.audioData.length === 0) {
+            throw new Error('No audio data received');
+        }
         
         const formData = new FormData();
-        const blob = new Blob([new Uint8Array(request.audioData)], { type: request.audioType || 'audio/webm' });
+        
+        // Create a Blob from audioData, handling both ArrayBuffer and Uint8Array formats
+        let audioBlob;
+        if (request.audioData instanceof ArrayBuffer) {
+            audioBlob = new Blob([new Uint8Array(request.audioData)], { 
+                type: request.audioType || 'audio/webm;codecs=opus'
+            });
+        } else if (Array.isArray(request.audioData)) {
+            // Convert array back to Uint8Array
+            audioBlob = new Blob([new Uint8Array(request.audioData)], { 
+                type: request.audioType || 'audio/webm;codecs=opus'
+            });
+        } else {
+            audioBlob = new Blob([request.audioData], { 
+                type: request.audioType || 'audio/webm;codecs=opus'
+            });
+        }
+        
+        if (audioBlob.size === 0) {
+            throw new Error('Empty audio recording');
+        }
+        
+        console.log('Audio blob created, size:', audioBlob.size, 'bytes');
         
         // Append with correct field name 'file' as expected by the server
-        formData.append('file', blob, 'recording.webm');
+        formData.append('file', audioBlob, 'recording.webm');
         formData.append('language', request.language || 'ru');
 
         try {
@@ -414,18 +446,32 @@ class BackgroundService {
             console.log('Base API URL:', apiUrl);
             
             console.log('Sending audio to server for transcription...');
-            // Changed endpoint from '/voice/transcribe' to just '/transcribe'
-            // This is because the API URL already contains '/api/v1/voice'
-            const response = await this.fetchAPI('/transcribe', {
+            const response = await this.fetchAPI('/voice/transcribe', {
                 method: 'POST', 
                 body: formData
             });
             
             console.log('Transcription response:', response);
+            if (!response || !response.text) {
+                throw new Error('Server returned invalid response format');
+            }
             return { transcription: response.text };
         } catch (error) {
             console.error('Transcription error:', error);
-            throw error;
+            
+            // Provide more user-friendly error messages
+            let errorMessage = 'Failed to transcribe audio: ';
+            if (error.message.includes('exceeded')) {
+                errorMessage += 'Audio is too long. Please keep recordings under 60 seconds.';
+            } else if (error.message.includes('format')) {
+                errorMessage += 'Unsupported audio format. Please try again.';
+            } else if (error.message.includes('timeout')) {
+                errorMessage += 'Server took too long to respond. Please try again.';
+            } else {
+                errorMessage += error.message;
+            }
+            
+            throw new Error(errorMessage);
         }
     }
 
@@ -442,7 +488,7 @@ class BackgroundService {
             
             // Fix for 422 error - use just the endpoint name without leading slash
             // this avoids double-including /api/v1 which is already in the apiUrl
-            const response = await this.fetchAPI('editing', {
+            const response = await this.fetchAPI('/editing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -644,7 +690,11 @@ class BackgroundService {
     async fetchAPI(endpoint, options = {}) {
         try {
             const apiUrl = await this.getApiUrl();
-            const url = `${apiUrl}${endpoint}`;
+            // Ensure we don't get double slashes by trimming any trailing slash from apiUrl
+            // and ensuring endpoint starts with a slash
+            const cleanApiUrl = apiUrl.replace(/\/+$/, '');
+            const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+            const url = `${cleanApiUrl}${cleanEndpoint}`;
             
             // Log more details about the request payload for debugging
             if (endpoint.includes('completion')) {
@@ -686,11 +736,22 @@ class BackgroundService {
                 try {
                     // Try to parse error as JSON
                     const errorData = await response.json();
-                    console.error(`Fetch error: ${errorData.detail || 'API request failed'}`);
-                    throw new Error(errorData.detail || 'API request failed');
+                    console.error(`API Error: ${errorData.detail || 'Request failed'} (${response.status})`);
+                    throw new Error(errorData.detail || `Request failed with status ${response.status}`);
                 } catch (jsonError) {
-                    // If JSON parsing fails, use status text
-                    throw new Error(`HTTP error! status: ${response.status} ${response.statusText}`);
+                    // If JSON parsing fails, provide more detailed error based on status code
+                    let errorMessage = `Request failed: `;
+                    switch(response.status) {
+                        case 404:
+                            errorMessage += `API endpoint not found. Please check the server is running and the endpoint path is correct.`;
+                            break;
+                        case 500:
+                            errorMessage += `Internal server error. Please try again later.`;
+                            break;
+                        default:
+                            errorMessage += `Status ${response.status} ${response.statusText}`;
+                    }
+                    throw new Error(errorMessage);
                 }
             }
             

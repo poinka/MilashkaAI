@@ -8,6 +8,10 @@ import asyncio
 import torch
 from app.core.models import get_asr_pipeline, get_llm
 from app.core.config import settings
+import librosa
+import tempfile
+import os
+import subprocess
 
 class AudioProcessor:
     def __init__(self):
@@ -16,42 +20,147 @@ class AudioProcessor:
         self.max_duration = settings.MAX_AUDIO_DURATION
 
     async def validate_audio(self, file: UploadFile) -> None:
-        if file.content_type not in self.supported_formats:
+        # Check the MIME type first
+        content_type = file.content_type.split(';')[0]  # Handle cases like "audio/webm;codecs=opus"
+        if content_type not in [fmt.split(';')[0] for fmt in self.supported_formats]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported audio format. Supported: {', '.join(self.supported_formats)}"
+                detail=f"Unsupported audio format '{file.content_type}'. Supported formats: {', '.join(self.supported_formats)}"
             )
 
-        first_chunk = await file.read(8192)
-        await file.seek(0)
-
+        # Read a small chunk to validate the audio file
         try:
+            first_chunk = await file.read(8192)
+            await file.seek(0)
+
+            if len(first_chunk) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Empty audio file"
+                )
+
+            # Try to open and validate the audio file
             with io.BytesIO(first_chunk) as buf:
-                with sf.SoundFile(buf) as f:
-                    duration = len(f) / f.samplerate
-                    if duration > self.max_duration:
+                try:
+                    with sf.SoundFile(buf) as f:
+                        duration = len(f) / f.samplerate
+                        if duration > self.max_duration:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Audio duration exceeds limit of {self.max_duration} seconds"
+                            )
+                except (sf.LibsndfileError, RuntimeError) as e:
+                    # Special handling for WebM/Ogg formats which might not be readable by soundfile
+                    if content_type in ['audio/webm', 'audio/ogg']:
+                        # For these formats, we'll just check the file size as a rough estimate
+                        # Assuming typical bitrate of 128kbps
+                        file_size = len(first_chunk)
+                        estimated_duration = (file_size * 8) / (128 * 1024)  # Convert bytes to seconds
+                        if estimated_duration > self.max_duration:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Audio file too large. Maximum duration: {self.max_duration} seconds"
+                            )
+                    else:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Audio duration exceeds limit of {self.max_duration} seconds"
+                            detail=f"Invalid or corrupted audio file: {str(e)}"
                         )
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid audio file: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error validating audio file: {str(e)}"
+            )
 
     async def process_audio(self, file: UploadFile) -> np.ndarray:
         await self.validate_audio(file)
         
         audio_bytes = await file.read()
+        
+        # Create temporary files for conversion
+        input_file = None
+        output_file = None
+        
         try:
-            with io.BytesIO(audio_bytes) as buf:
-                data, samplerate = sf.read(buf)
-                if samplerate != self.sample_rate:
-                    import resampy
-                    data = resampy.resample(data, samplerate, self.sample_rate)
-                if len(data.shape) > 1:
-                    data = data.mean(axis=1)
+            # Save incoming audio to a temp file
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
+                tmp.write(audio_bytes)
+                input_file = tmp.name
+            
+            # Create output temp file for WAV conversion
+            output_file = input_file.replace('.webm', '.wav')
+            
+            # Convert to WAV using FFmpeg
+            logging.info(f"Converting audio from {input_file} to {output_file}")
+            try:
+                # Try using ffmpeg-python if available
+                try:
+                    import ffmpeg
+                    (
+                        ffmpeg
+                        .input(input_file)
+                        .output(output_file, acodec='pcm_s16le', ac=1, ar=str(self.sample_rate))
+                        .overwrite_output()
+                        .run(quiet=True, capture_stdout=True, capture_stderr=True)
+                    )
+                    logging.info("Audio converted with ffmpeg-python")
+                except (ImportError, ModuleNotFoundError):
+                    # Fall back to subprocess if ffmpeg-python not available
+                    logging.info("ffmpeg-python not available, falling back to subprocess")
+                    subprocess.run([
+                        'ffmpeg', '-i', input_file, 
+                        '-acodec', 'pcm_s16le',
+                        '-ac', '1',
+                        '-ar', str(self.sample_rate),
+                        '-y', output_file
+                    ], check=True, capture_output=True)
+                    logging.info("Audio converted with subprocess ffmpeg")
+                    
+                # Now load the converted WAV file with soundfile
+                data, samplerate = sf.read(output_file)
                 return data
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error processing audio: {str(e)}")
+                
+            except Exception as ffmpeg_error:
+                logging.error(f"FFmpeg conversion failed: {ffmpeg_error}")
+                
+                # If ffmpeg fails, try soundfile directly as fallback
+                try:
+                    # Reset file position
+                    with io.BytesIO(audio_bytes) as buf:
+                        data, samplerate = sf.read(buf)
+                        if samplerate != self.sample_rate:
+                            import resampy
+                            data = resampy.resample(data, samplerate, self.sample_rate)
+                        if len(data.shape) > 1:
+                            data = data.mean(axis=1)  # Convert stereo to mono
+                        return data
+                except Exception as sf_error:
+                    # If soundfile fails too, try librosa as final attempt
+                    try:
+                        logging.info(f"Attempting to load audio with librosa from {input_file}")
+                        data, samplerate = librosa.load(
+                            input_file, 
+                            sr=self.sample_rate,
+                            mono=True
+                        )
+                        return data
+                    except Exception as librosa_error:
+                        # All methods failed
+                        logging.error(f"All audio processing methods failed. FFmpeg: {ffmpeg_error}, SoundFile: {sf_error}, Librosa: {librosa_error}")
+                        raise HTTPException(
+                            status_code=400, 
+                            detail="Could not process audio. Please try a different recording format."
+                        )
+        finally:
+            # Clean up temporary files
+            for temp_file in [input_file, output_file]:
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.unlink(temp_file)
+                    except Exception as e:
+                        logging.warning(f"Failed to delete temporary file {temp_file}: {e}")
 
 async def transcribe_audio(audio_file: UploadFile, language: str) -> str:
     logging.info(f"Transcribing audio (language: {language})...")
@@ -122,56 +231,21 @@ async def stream_transcription(audio_stream: AsyncGenerator[bytes, None], langua
 
 async def format_transcription(raw_transcription: str, language: str) -> str:
     logging.info(f"Formatting transcription (language: {language})...")
-    model, tokenizer = get_llm()
-
+    # Safety check for raw transcription
+    if not raw_transcription or not isinstance(raw_transcription, str):
+        logging.error(f"Invalid raw_transcription provided: {type(raw_transcription)}")
+        return "" if not raw_transcription else str(raw_transcription)
     try:
-        prompt = f"""<start_of_turn>user
-Format the following transcribed text in {language}. Apply these improvements:
-1. Fix punctuation and capitalization
-2. Remove filler words and hesitations
-3. Improve sentence structure while preserving meaning
-4. Fix any obvious transcription errors
-
-Text: "{raw_transcription}"<end_of_turn>
-<start_of_turn>model
-Formatted Text: """
-
-        inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=settings.MAX_INPUT_LENGTH
-        ).to(model.device)
-
-        async def generate_with_timeout():
-            return await asyncio.wait_for(
-                asyncio.to_thread(
-                    model.generate,
-                    **inputs,
-                    max_new_tokens=settings.MAX_NEW_TOKENS,
-                    temperature=0.3,
-                    do_sample=False,
-                    eos_token_id=tokenizer.eos_token_id,
-                    pad_token_id=tokenizer.eos_token_id
-                ),
-                timeout=settings.MODEL_TIMEOUT
-            )
-
-        outputs = await generate_with_timeout()
-        generated_ids = outputs[0, inputs.input_ids.shape[1]:]
-        formatted_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        formatted_text = formatted_text.strip().replace('"', '')
-        if formatted_text.lower().startswith("formatted text:"):
-            formatted_text = formatted_text[len("formatted text:"):].strip()
-
-        logging.info(f"Formatted text: '{formatted_text[:100]}...'")
-        return formatted_text
-
-    except asyncio.TimeoutError:
-        logging.error("Formatting timed out")
-        return raw_transcription
+        llm = get_llm()
+        # Fallback: if LLMWrapper does not support formatting, just return the raw transcription
+        if not hasattr(llm, 'format_text') or not callable(getattr(llm, 'format_text', None)):
+            logging.warning("LLMWrapper does not support format_text; returning raw transcription.")
+            return raw_transcription
+        # If format_text exists, use it
+        return llm.format_text(raw_transcription, language)
     except Exception as e:
         logging.error(f"Error during formatting: {e}")
+        # TODO: Implement proper formatting using LLM when available
         return raw_transcription
 
 async def extract_requirements(transcription: str, language: str) -> Dict[str, Any]:

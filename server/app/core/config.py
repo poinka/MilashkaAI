@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     MAX_DOCUMENT_SIZE: int = 20 * 1024 * 1024  # 20MB
     SUPPORTED_FORMATS: list = [".pdf", ".docx", ".txt", ".md"]
     
+    # Audio processing settings
+    BATCH_SIZE: int = 8
+    MODEL_TIMEOUT: int = 120  # 120 seconds timeout for model inference (increased from 30)
+    CHUNK_SIZE: int = 32768  # 32KB chunks for streaming
+    MAX_AUDIO_DURATION: int = 60  # Maximum audio duration in seconds
+    MAX_AUDIO_SIZE: int = 10 * 1024 * 1024  # 10MB for audio files
+    SUPPORTED_AUDIO_FORMATS: list = ["audio/webm", "audio/webm;codecs=opus", "audio/ogg;codecs=opus"]
+    
     class Config:
         env_file = ".env"
 

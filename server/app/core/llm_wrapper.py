@@ -4,6 +4,7 @@ from io import StringIO
 import contextlib
 import os
 from typing import Optional, List, Dict, Any
+import uuid
 
 from llama_cpp import Llama
 from app.core.config import settings
@@ -106,7 +107,76 @@ class LLMWrapper:
         except Exception as e:
             logger.error(f"Chat completion failed: {str(e)}", exc_info=True)
             raise
+        
+    def format_text(self, raw_transcription: str, language: str) -> str:
+        """Format transcribed text using the LLM with a specific prompt. Only return the formatted text, not explanations."""
+        if not self.model:
+            raise RuntimeError("LLM not initialized")
+        
+        # Add unique request ID for tracking
+        request_id = f"format-{str(uuid.uuid4())[:8]}"
+        logger.info(f"[LLM-{request_id}] Starting transcription formatting")
+        
+        prompt = f"""<start_of_turn>user
+Format the following transcribed text in {language}. Only output the improved text itself, without any explanations, comments, or bullet points. Do not add any extra text or formatting.
 
+Text: \"{raw_transcription}\"<end_of_turn>
+<start_of_turn>model
+"""
+
+        logger.info(f"[LLM-{request_id}] Sending prompt to LLM with raw text length: {len(raw_transcription)}")
+        
+        # Log the input prompt
+        logger.info(f"[LLM-{request_id}] ===== FORMAT INPUT START =====")
+        logger.info(f"[LLM-{request_id}] Language: {language}")
+        logger.info(f"[LLM-{request_id}] Raw text: {raw_transcription}")
+        logger.info(f"[LLM-{request_id}] ===== FORMAT INPUT END =====")
+        
+        response = self.model(prompt, max_tokens=256, temperature=0.3, stop=["<end_of_turn>"])
+        
+        # Log the raw response to debug any issues
+        logger.info(f"[LLM-{request_id}] Raw response type: {type(response)}")
+        logger.info(f"[LLM-{request_id}] Raw response: {response}")
+        
+        # Handle different response structures from llama-cpp
+        formatted_text = ""
+        if isinstance(response, dict):
+            # Standard completion response structure
+            if 'choices' in response and response['choices']:
+                formatted_text = response['choices'][0].get('text', '')
+            # Fall back to string representation if no text found
+            if not formatted_text:
+                formatted_text = str(response)
+        elif isinstance(response, list) and response:
+            # List response structure
+            if 'generated_text' in response[0]:
+                formatted_text = response[0]['generated_text']
+            else:
+                formatted_text = str(response[0])
+        else:
+            # Last resort fallback
+            formatted_text = str(response)
+        
+        # Clean up the formatted text
+        formatted_text = formatted_text.strip()
+        
+        # Log the extracted formatted text
+        logger.info(f"[LLM-{request_id}] Extracted formatted text: {formatted_text}")
+        
+        # If the model still outputs explanations, try to cut at the first markdown or explanation marker
+        for marker in ["**Explanation", "Explanation", "\n- ", "\n* ", "\n1.", "\n\n"]:
+            idx = formatted_text.find(marker)
+            if idx > 0:
+                formatted_text = formatted_text[:idx].strip()
+                logger.info(f"[LLM-{request_id}] Trimmed at marker '{marker}' to: {formatted_text}")
+                
+        # Remove any leading/trailing quotes
+        if formatted_text.startswith('"') and formatted_text.endswith('"'):
+            formatted_text = formatted_text[1:-1].strip()
+            logger.info(f"[LLM-{request_id}] Removed surrounding quotes: {formatted_text}")
+        
+        logger.info(f"[LLM-{request_id}] Formatting completed. Final text: {formatted_text}")
+        return formatted_text
 # Global LLM instance
 _llm_instance: Optional[LLMWrapper] = None
 

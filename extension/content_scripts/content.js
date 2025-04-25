@@ -65,6 +65,7 @@ function showContextInvalidatedError() {
         zIndex: '999999',
         cursor: 'pointer',
         fontFamily: 'Montserrat, system-ui',
+        fontWeight: 500,
         boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
         display: 'flex',
         justifyContent: 'center',
@@ -96,6 +97,7 @@ function showContextInvalidatedError() {
         borderRadius: '20px',
         cursor: 'pointer',
         fontFamily: 'Montserrat, system-ui',
+        fontWeight: 500,
         fontSize: '14px'
     });
     errorBar.appendChild(reloadBtn);
@@ -253,22 +255,26 @@ class SuggestionManager {
         // Create overlay if needed
         this.suggestionElement = document.createElement('div');
         this.suggestionElement.className = 'milashka-suggestion-overlay';
-        // Style to match input - enhanced visibility
+        // Style to match input - modern, transparent, Montserrat, italic, adaptive color
         const style = window.getComputedStyle(element);
         Object.assign(this.suggestionElement.style, {
             position: 'absolute',
             left: style.paddingLeft,
             top: style.paddingTop,
-            color: '#333', // Darker color for better visibility
+            color: 'rgba(133, 133, 133, 0.66)',
+            backgroundColor: 'transparent',
+            fontFamily: "'Montserrat', system-ui, sans-serif",
+            fontWeight: 500,
             pointerEvents: 'none',
-            font: style.font,
+            fontSize: style.fontSize,
             whiteSpace: 'pre-wrap',
-            opacity: 0.95, // Increased for better visibility
-            zIndex: 999999, // Much higher z-index to ensure visibility
+            opacity: 1,
+            zIndex: 999999,
             width: '100%',
             height: '100%',
             overflow: 'hidden',
-            backgroundColor: 'transparent', // Ensure background is transparent
+            border: 'none',
+            transition: 'opacity 0.2s'
         });
         // Show only the part after the user's input
         const value = element.value || '';
@@ -289,7 +295,7 @@ class SuggestionManager {
         
         // Render ghost text after caret
         this.suggestionElement.innerHTML =
-            `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span style="color:#333;background-color:#f0f0f0;border-radius:2px;">${this.escapeHtml(after)}</span>`;
+            `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span>${this.escapeHtml(after)}</span>`;
         wrapper.appendChild(this.suggestionElement);
         console.log('[Complete] displaySuggestion: overlay appended');
     }
@@ -391,6 +397,8 @@ class EditingUI {
         this.selectionStart = null;
         this.selectionEnd = null;
         this.speechManager = new SpeechManager(); // Add speech manager
+        this.abortController = null; // For aborting in-progress edit requests
+        this.editInProgress = false; // Flag to track if an edit is in progress
     }
 
     capture() {
@@ -468,10 +476,23 @@ class EditingUI {
             } else {
                 ContextMenuStyler.updateMicIcon(voiceButton, true);
                 const input = this.menu.querySelector('.milashka-edit-input');
-                this.speechManager.startRecording(null, true, (formattedText) => {
+                // Голосовой ввод: сразу отправляем результат в LLM, как альтернативу ручному вводу
+                this.speechManager.startRecording(null, true, async (formattedText) => {
                     if (input) {
                         input.value = formattedText;
                         ContextMenuStyler.updateMicIcon(voiceButton, false);
+                        input.focus();
+                        // Показать анимацию подсветки
+                        const originalBg = input.style.backgroundColor;
+                        input.style.backgroundColor = '#e6f7ff';
+                        setTimeout(() => {
+                            input.style.backgroundColor = originalBg;
+                        }, 500);
+                        // Сразу отправить на LLM (форматирование)
+                        editButton.disabled = true;
+                        editButton.textContent = 'Форматирование...';
+                        await this.performEdit(formattedText);
+                        this.hideFloatingMenu();
                     }
                 });
             }
@@ -505,7 +526,7 @@ class EditingUI {
         editButton.onclick = async () => {
             if (input.value) {
                 editButton.disabled = true;
-                editButton.textContent = 'Processing...';
+                editButton.textContent = 'Форматирование...';
                 await this.performEdit(input.value);
                 this.hideFloatingMenu();
             }
@@ -513,16 +534,22 @@ class EditingUI {
 
         // Create cancel button with capsule shape and fixed width
         const cancelButton = ContextMenuStyler.createActionButton('Отмена', false);
-        cancelButton.onclick = () => this.hideFloatingMenu();
+        cancelButton.onclick = () => {
+            // First abort any in-progress requests, then hide the menu
+            this.abortRequests();
+            this.hideFloatingMenu();
+        };
 
         // Handle enter key in input
         input.onkeydown = async (e) => {
             if (e.key === 'Enter' && input.value) {
                 editButton.disabled = true;
-                editButton.textContent = 'Processing...';
+                editButton.textContent = 'Форматирование...';
                 await this.performEdit(input.value);
                 this.hideFloatingMenu();
             } else if (e.key === 'Escape') {
+                // First abort any in-progress requests, then hide the menu
+                this.abortRequests();
                 this.hideFloatingMenu();
             }
         };
@@ -537,6 +564,9 @@ class EditingUI {
         this.menu.appendChild(inputWrapper);
         this.menu.appendChild(buttonWrapper);
         document.body.appendChild(this.menu);
+
+        // Focus the input field automatically
+        setTimeout(() => input.focus(), 50);
 
         // Add global click handler
         document.addEventListener('mousedown', this.handleClickOutside);
@@ -553,6 +583,25 @@ class EditingUI {
             this.menu.remove();
             this.menu = null;
             document.removeEventListener('mousedown', this.handleClickOutside);
+            
+            // Abort any in-progress requests when menu is closed
+            this.abortRequests();
+        }
+    }
+    
+    abortRequests() {
+        // Abort any in-progress edit requests
+        if (this.abortController) {
+            console.log('[Complete] Aborting in-progress edit request');
+            this.abortController.abort();
+            this.abortController = null;
+            this.editInProgress = false;
+        }
+        
+        // Also abort any suggestion/completion requests from the suggestionManager
+        if (suggestionManager && suggestionManager.streamInProgress) {
+            console.log('[Complete] Aborting in-progress suggestion stream from EditingUI');
+            suggestionManager.cancelStream('editingUI_cancel');
         }
     }
 
@@ -563,22 +612,48 @@ class EditingUI {
             return;
         }
 
+        // Abort any existing in-progress request
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+        
+        // Create a new AbortController for this request
+        this.abortController = new AbortController();
+        this.editInProgress = true;
+
         try {
             console.log('[Complete] Sending edit request:', {
                 text: this.originalText,
                 prompt: prompt
             });
 
-            const response = await chrome.runtime.sendMessage({
+            // Create a signal for detecting when our request is aborted
+            const signal = this.abortController.signal;
+            
+            // Create a promise that will reject when the abort signal is triggered
+            const abortPromise = new Promise((_, reject) => {
+                signal.addEventListener('abort', () => {
+                    reject(new Error('Edit request was cancelled'));
+                });
+            });
+            
+            // Create the message promise
+            const messagePromise = chrome.runtime.sendMessage({
                 type: "EDIT_TEXT",
                 selected_text: this.originalText,
                 prompt: prompt,
                 language: document.documentElement.lang || 'en'
             });
+            
+            // Race the message promise against the abort promise
+            const response = await Promise.race([messagePromise, abortPromise]);
 
             console.log('[Complete] Received edit response:', response);
-
-            console.log('[Complete] Response:', response);
+            
+            // If we've gotten this far, the request was not aborted
+            this.editInProgress = false;
+            this.abortController = null;
             
             // The edited_text is actually in response.data.edited_text
             if (!response.edited_text) {
@@ -589,8 +664,16 @@ class EditingUI {
             this.showFeedback('Edit applied successfully', 'success');
 
         } catch (error) {
-            console.error('[Complete] Edit failed:', error);
-            this.showFeedback(`Edit failed: ${error.message}`, 'error');
+            this.editInProgress = false;
+            this.abortController = null;
+            
+            // Don't show an error notification if the request was deliberately cancelled
+            if (error.message === 'Edit request was cancelled') {
+                console.log('[Complete] Edit request was cancelled');
+            } else {
+                console.error('[Complete] Edit failed:', error);
+                this.showFeedback(`Edit failed: ${error.message}`, 'error');
+            }
         }
     }
 
@@ -708,15 +791,38 @@ class SpeechManager {
         this.editCallback = callback;
         this.finalTranscription = '';
         this.audioChunks = [];
-        this.createTranscriptionElement();
+        
+        // Only create transcription element for non-edit mode
+        if (!isEditMode) {
+            this.createTranscriptionElement();
+        }
+        
         this.log('Requesting microphone access...');
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000
+                }
+            });
+            
+            // Try to use the most widely supported codecs
+            let mimeType = 'audio/webm;codecs=opus';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = 'audio/webm';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = 'audio/ogg;codecs=opus';
+                }
+            }
+            
+            this.mediaRecorder = new MediaRecorder(stream, { 
+                mimeType: mimeType,
+                audioBitsPerSecond: 128000 
+            });
             this.mediaRecorder.onstart = () => {
                 this.isRecording = true;
                 this.log('Recording started.');
-                this.showPermissionFeedback('Recording started.', 'success');
+                this.showPermissionFeedback('Запись началась...', 'success');
             };
             this.mediaRecorder.ondataavailable = async (event) => {
                 if (event.data.size > 0) {
@@ -726,11 +832,13 @@ class SpeechManager {
             };
             this.mediaRecorder.onerror = (e) => {
                 this.log('MediaRecorder error: ' + e.error, 'error');
-                this.showPermissionFeedback('Recording error: ' + e.error, 'error');
+                this.showPermissionFeedback('Ошибка записи: ' + e.error, 'error');
             };
             this.mediaRecorder.onstop = async () => {
                 this.isRecording = false;
                 this.log('Recording stopped. Sending audio for transcription...');
+                this.showPermissionFeedback('Обработка записи...', 'info');
+                
                 const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
                 const arrayBuffer = await audioBlob.arrayBuffer();
                 chrome.runtime.sendMessage({
@@ -741,29 +849,39 @@ class SpeechManager {
                 }, (response) => {
                     if (response && response.transcription) {
                         this.finalTranscription = response.transcription;
-                        this.updateTranscriptionDisplay();
-                        this.log('Transcription received: ' + response.transcription);
+                        
+                        // For edit mode, directly pass to callback without showing transcription element
                         if (this.isEditMode && this.editCallback) {
-                            this.editCallback(response.transcription);
-                        } else if (this.targetElement && isValidInputElement(this.targetElement)) {
-                            const start = this.targetElement.selectionStart || 0;
-                            const end = this.targetElement.selectionEnd || 0;
-                            const originalText = this.targetElement.value || '';
-                            this.targetElement.value = originalText.substring(0, start) + response.transcription + originalText.substring(end);
-                            this.targetElement.selectionStart = this.targetElement.selectionEnd = start + response.transcription.length;
-                            this.targetElement.dispatchEvent(new Event('input', { bubbles: true }));
-                            this.targetElement.focus();
+                            console.log('Passing transcription directly to edit input:', this.finalTranscription);
+                            this.editCallback(this.finalTranscription);
+                        } else {
+                            // For regular mode, update the transcription display
+                            this.updateTranscriptionDisplay();
+                            this.log('Transcription received: ' + response.transcription);
+                            
+                            // Insert text into target if available
+                            if (this.targetElement && isValidInputElement(this.targetElement)) {
+                                const start = this.targetElement.selectionStart || 0;
+                                const end = this.targetElement.selectionEnd || 0;
+                                const originalText = this.targetElement.value || '';
+                                this.targetElement.value = originalText.substring(0, start) + response.transcription + originalText.substring(end);
+                                this.targetElement.selectionStart = this.targetElement.selectionEnd = start + response.transcription.length;
+                                this.targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                                this.targetElement.focus();
+                            }
                         }
+                        
+                        this.showPermissionFeedback('Транскрипция готова', 'success');
                     } else {
                         this.log('Transcription failed: ' + (response && response.error), 'error');
-                        this.showPermissionFeedback('Transcription failed: ' + (response && response.error), 'error');
+                        this.showPermissionFeedback('Ошибка транскрипции: ' + (response && response.error), 'error');
                     }
                 });
             };
             this.mediaRecorder.start();
         } catch (error) {
             this.log('Microphone access denied or error: ' + error.message, 'error');
-            this.showPermissionFeedback('Microphone access denied or error: ' + error.message, 'error');
+            this.showPermissionFeedback('Ошибка доступа к микрофону: ' + error.message, 'error');
         }
     }
 
@@ -949,15 +1067,16 @@ class ContextMenuStyler {
             width: '200px',
             padding: '8px 12px',
             border: '1px solid #e0e0e0',
-            backgroundColor: '#f5f5f5', // Light gray background
-            borderRadius: '30px', // Capsule shape
+            backgroundColor: '#f5f5f5',
+            borderRadius: '30px',
             fontSize: '14px',
-            outline: 'none'
+            outline: 'none',
+            color: '#111', // Make text black
+            fontWeight: '600', // Make text bolder
+            fontFamily: 'Montserrat, system-ui',
         });
-        
         // Change placeholder to Russian
-        input.placeholder = 'Опишите изменение';
-        
+        input.placeholder = 'Что изменить?';
         return input;
     }
     
@@ -985,16 +1104,16 @@ class ContextMenuStyler {
         // Add hover effect for cancel button with red inner shadow
         if (!isPrimary) {
             // Initially add a subtle red inner shadow (more spread out)
-            button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1)';
+            button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.0), 0 2px 6px rgba(0,0,0,0.1)';
             
             button.addEventListener('mouseover', () => {
                 // Stronger red inner shadow on hover
-                button.style.boxShadow = 'inset 0 0 4px 2px rgba(255,0,0,0.5), 0 2px 6px rgba(0,0,0,0.1)';
+                button.style.boxShadow = 'inset 0 0 8px 4px rgba(255,0,0,0.6), 0 2px 6px rgba(0,0,0,0.1)';
             });
             
             button.addEventListener('mouseout', () => {
                 // Return to subtle red inner shadow
-                button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1)';
+                button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.0), 0 2px 6px rgba(0,0,0,0.1)';
             });
         }
         
@@ -1006,10 +1125,42 @@ class ContextMenuStyler {
 const suggestionManager = new SuggestionManager();
 const editingUI = new EditingUI();
 
+// Обработчик сообщений для показа меню
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.type === "SHOW_EDIT_UI") {
+        console.log('[Complete] Received SHOW_EDIT_UI request');
+        if (editingUI.capture()) {
+            // Position menu near the selection
+            const selection = window.getSelection();
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            
+            // Сохраняем выделение
+            const savedRange = range.cloneRange();
+            
+            editingUI.showFloatingMenu(
+                rect.right > window.innerWidth - 220 ? rect.left : rect.right,
+                rect.bottom + window.scrollY + 5
+            );
+            
+            // Восстанавливаем выделение после показа меню
+            setTimeout(() => {
+                try {
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(savedRange);
+                } catch (e) {
+                    console.error('[Complete] Error restoring selection:', e);
+                }
+            }, 100);
+        }
+    }
+});
+// --- Конец исправления выделения ---
+
 // Handle input events for autocomplete
 document.addEventListener('input', async (event) => {
     const element = event.target;
-    
     // Skip if element is not valid for suggestions or is our edit menu input
     if (!isValidInputElement(element)) {
         return;
@@ -1028,163 +1179,27 @@ document.addEventListener('input', async (event) => {
     // Set new debounce timer
     suggestionManager.debounceTimer = setTimeout(async () => {
         console.log('[Complete] Autocomplete debounce triggered');
-        if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
-            const textBeforeCursor = element.value.substring(0, element.selectionStart);
-            console.log('[Complete] Text before cursor:', textBeforeCursor?.substring(Math.max(0, textBeforeCursor.length - 50)));
-            
-            if (textBeforeCursor && textBeforeCursor.trim().length > 3) {
-                console.log('[Complete] Sending streaming completion request');
-                
-                // Set up for streaming
-                suggestionManager.streamInProgress = true;
-                suggestionManager.activeInputElement = element;
-                let lastSuggestionLength = 0;
-                
-                try {
-                    // Check if chrome.runtime is available before sending message
-                    if (!chrome || !chrome.runtime) {
-                        console.error('[Complete] Chrome runtime not available. Extension context may have been invalidated.');
-                        suggestionManager.streamInProgress = false;
-                        return;
-                    }
-                    
-                    // Request streaming completion
-                    const streamResponse = await chrome.runtime.sendMessage({
-                        type: "GET_COMPLETION_STREAM",
-                        current_text: textBeforeCursor,
-                        language: document.documentElement.lang || 'en'
-                    }).catch(error => {
-                        console.error('[Complete] Error sending message to background script:', error);
-                        suggestionManager.streamInProgress = false;
-                        throw error; // Re-throw to be caught by outer try-catch
-                    });
-                    
-                    console.log('[Complete] Stream response initialized:', streamResponse);
-                    
-                    if (streamResponse && streamResponse.id) {
-                        // Create abort controller for this stream
-                        suggestionManager.abortController = new AbortController();
-                        
-                        // Store stream ID for debugging
-                        const streamId = streamResponse.id || 'unknown';
-                        console.log(`[Complete] Using stream ID: ${streamId}`);
-                        
-                        if (!streamId || streamId === 'unknown') {
-                            console.error('[Complete] Invalid stream ID received');
-                            suggestionManager.streamInProgress = false;
-                        }
-                        
-                        // Process stream tokens as they arrive
-                        while (!suggestionManager.abortController.signal.aborted) {
-                            try {
-                                if (!streamResponse || !streamResponse.id) {
-                                    console.error('[Complete] Missing stream ID for READ_NEXT_CHUNK');
-                                    break;
-                                }
-                                
-                                // Check if runtime is still available before sending READ_NEXT_CHUNK
-                                if (!chrome || !chrome.runtime) {
-                                    console.error('[Complete] Chrome runtime not available for READ_NEXT_CHUNK. Extension context may have been invalidated.');
-                                    suggestionManager.streamInProgress = false;
-                                    showContextInvalidatedError();
-                                    break;
-                                }
-                                
-                                const data = await chrome.runtime.sendMessage({
-                                    type: "READ_NEXT_CHUNK",
-                                    id: streamResponse.id
-                                }).catch(error => {
-                                    console.error('[Complete] Error sending READ_NEXT_CHUNK message:', error);
-                                    if (error.message && error.message.includes('Receiving end does not exist')) {
-                                        // Extension context has been invalidated
-                                        showContextInvalidatedError();
-                                    }
-                                    throw error; // Re-throw to be caught by outer try-catch
-                                });
-                                
-                                if (!data) {
-                                    console.error('[Complete] Received empty response from READ_NEXT_CHUNK');
-                                    break;
-                                }
-                                
-                                if (data.done) {
-                                    console.log('[Complete] Stream complete');
-                                    break;
-                                }
-                                
-                                // Process and display each token as it arrives with visual feedback
-                                if (data.messages && data.messages.length > 0) {
-                                    const latestMessage = data.messages[data.messages.length - 1];
-                                    // Only update UI if suggestion actually changed
-                                    if (latestMessage.suggestion && 
-                                        latestMessage.suggestion.length > lastSuggestionLength) {
-                                        console.log('[Complete] Received token:', latestMessage.token);
-                                        lastSuggestionLength = latestMessage.suggestion.length;
-                                        // Only show the new completion, not the prompt + completion
-                                        let completion = latestMessage.suggestion;
-                                        
-                                        // Log both before pruning to check for encoding issues
-                                        console.log('[Complete] Before slice check:', {
-                                            completionSample: completion.substring(0, 50),
-                                            textBeforeCursorSample: textBeforeCursor.substring(Math.max(0, textBeforeCursor.length - 50)),
-                                            completionStartsWithCursor: completion.startsWith(textBeforeCursor),
-                                            completionContainsCursor: completion.includes(textBeforeCursor)
-                                        });
-                                        
-                                        // Try to extract only the completion part
-                                        // For Cyrillic text, direct startsWith might fail due to encoding differences
-                                        // So we'll also try a substring comparison
-                                        if (completion.startsWith(textBeforeCursor)) {
-                                            completion = completion.slice(textBeforeCursor.length);
-                                        } else if (completion.includes(textBeforeCursor)) {
-                                            // If it contains the text but doesn't start with it exactly
-                                            // (can happen with Cyrillic text due to encoding)
-                                            completion = completion.substring(completion.indexOf(textBeforeCursor) + textBeforeCursor.length);
-                                        }
-
-                                        // Debug the actual completion being shown
-                                        console.log('[Complete] Showing completion:', {
-                                            completionLength: completion.length,
-                                            completionSample: completion.substring(0, 30)
-                                        });
-                                        
-                                        suggestionManager.displaySuggestion(element, completion);
-                                        // Briefly flash the suggestion to indicate new tokens (subtle visual feedback)
-                                        if (suggestionManager.suggestionElement) {
-                                            const originalOpacity = suggestionManager.suggestionElement.style.opacity;
-                                            suggestionManager.suggestionElement.style.opacity = '0.9';
-                                            setTimeout(() => {
-                                                if (suggestionManager.suggestionElement) {
-                                                    suggestionManager.suggestionElement.style.opacity = originalOpacity;
-                                                }
-                                            }, 100);
-                                        }
-                                    }
-                                }
-                            } catch (error) {
-                                console.error('[Complete] Streaming completion error:', error);
-                                break;
-                            } finally {
-                                suggestionManager.streamInProgress = false;
-                            }
-                        }
-                    }
-                } catch (error) {
-                    console.error('[Complete] Streaming completion error:', error);
-                } finally {
-                    suggestionManager.streamInProgress = false;
+        const textBeforeCursor = element.value.substring(0, element.selectionStart);
+        if (textBeforeCursor && textBeforeCursor.trim().length > 1) {
+            console.log('[Complete] Fetching completion via GET_COMPLETION:', textBeforeCursor);
+            chrome.runtime.sendMessage({
+                type: 'GET_COMPLETION',
+                current_text: textBeforeCursor,
+                language: document.documentElement.lang || 'ru'
+            }, response => {
+                console.log('[Complete] GET_COMPLETION response:', response);
+                if (response && response.success && response.suggestion) {
+                    suggestionManager.displaySuggestion(element, response.suggestion);
+                } else {
+                    suggestionManager.clearSuggestion();
                 }
-            } else {
-                console.log('[Complete] Text too short for completion');
-            }
+            });
         } else {
-            console.log('[Complete] Completion skipped - stream in progress:', 
-                        suggestionManager.streamInProgress, 
-                        'just canceled:', 
-                        suggestionManager.justCanceledByKeystroke);
+            suggestionManager.clearSuggestion();
         }
-    }, 700);
+    }, suggestionManager.DEBOUNCE_DELAY);
 });
+// --- Конец исправления подсказки ---
 
 // Handle special keys for suggestions
 document.addEventListener('keydown', (event) => {
@@ -1195,6 +1210,10 @@ document.addEventListener('keydown', (event) => {
         event.preventDefault();
         suggestionManager.acceptSuggestion();
     } else if (event.key === 'Escape') {
+        // Also hide menu on Escape
+        if (editingUI && typeof editingUI.hideFloatingMenu === 'function') {
+            editingUI.hideFloatingMenu();
+        }
         suggestionManager.cancelStream('globalKeydown');
         suggestionManager.clearSuggestion();
     }
@@ -1216,23 +1235,6 @@ document.addEventListener('mouseup', (event) => {
             event.clientX,
             event.clientY + window.scrollY + 5
         );
-    }
-});
-
-// Handle context menu edit requests
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.type === "SHOW_EDIT_UI") {
-        if (editingUI.capture()) {
-            // Position menu near the selection
-            const selection = window.getSelection();
-            const range = selection.getRangeAt(0);
-            const rect = range.getBoundingClientRect();
-            
-            editingUI.showFloatingMenu(
-                rect.right > window.innerWidth - 220 ? rect.left : rect.right,
-                rect.bottom + window.scrollY + 5
-            );
-        }
     }
 });
 

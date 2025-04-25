@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     libc++-dev \
     libc++abi-dev \
+    ffmpeg \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,7 +25,7 @@ RUN export PATH="$PATH:/root/.cargo/bin" && \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.7.1/en_core_web_lg-3.7.1.tar.gz \
         https://github.com/explosion/spacy-models/releases/download/ru_core_news_lg-3.7.0/ru_core_news_lg-3.7.0.tar.gz
 
-RUN pip install --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python
+RUN pip install --no-binary=llama-cpp-python llama-cpp-python
 
 COPY app/ app/
 

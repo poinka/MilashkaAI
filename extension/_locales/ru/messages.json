@@ -32,8 +32,8 @@
     "description": "Статус - обработка"
   },
   "statusIndexed": {
-    "message": "Индексация завершена",
-    "description": "Статус - индексация завершена"
+    "message": "Проиндексировано",
+    "description": "Статус - проиндексировано"
   },
   "statusError": {
     "message": "Ошибка",

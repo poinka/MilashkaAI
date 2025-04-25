@@ -294,16 +294,51 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    function updateVoiceToggleIcon(isRecording) {
+        const icon = voiceToggle.querySelector('.voice-icon');
+        if (!icon) return;
+        if (isRecording) {
+            icon.src = '../icons/stop.png';
+            icon.alt = 'Стоп';
+        } else {
+            icon.src = '../icons/microphone.png';
+            icon.alt = 'Микрофон';
+        }
+    }
+
     async function startPopupVoiceInput() {
         try {
-            voiceFeedback.innerHTML = '<img src="../icons/microphone.png" alt="Микрофон" style="width:18px;height:18px;vertical-align:middle;margin-right:6px;"> Запись...';
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Hide feedback bar at start
+            voiceFeedback.style.display = 'none';
+            voiceFeedback.textContent = '';
+
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000
+                }
+            });
+            
+            // Try to use the most widely supported codecs
+            let mimeType = 'audio/webm;codecs=opus';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = 'audio/webm';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = 'audio/ogg;codecs=opus';
+                }
+            }
+            
             popupAudioChunks = [];
-            popupMediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+            popupMediaRecorder = new MediaRecorder(stream, { 
+                mimeType: mimeType,
+                audioBitsPerSecond: 128000 
+            });
             popupMediaRecorder.onstart = () => {
                 isRecording = true;
                 voiceToggle.classList.add('recording');
                 voiceToggle.querySelector('.voice-status').textContent = 'Остановить запись';
+                updateVoiceToggleIcon(true);
+                voiceFeedback.style.display = 'block';
                 logPopup('Recording started.');
             };
             popupMediaRecorder.ondataavailable = (event) => {
@@ -320,31 +355,79 @@ document.addEventListener('DOMContentLoaded', () => {
                 isRecording = false;
                 voiceToggle.classList.remove('recording');
                 voiceToggle.querySelector('.voice-status').textContent = 'Начать голосовой ввод';
+                updateVoiceToggleIcon(false);
                 logPopup('Recording stopped. Sending audio for transcription...');
-                voiceFeedback.textContent = '⏳ Распознавание...';
+                // Show feedback bar for recognition
+                voiceFeedback.textContent = 'Распознавание...';
+                voiceFeedback.style.display = 'block';
+                voiceFeedback.classList.add('show');
                 const audioBlob = new Blob(popupAudioChunks, { type: 'audio/webm' });
                 const arrayBuffer = await audioBlob.arrayBuffer();
-                chrome.runtime.sendMessage({
-                    type: 'TRANSCRIBE_AUDIO',
-                    audioData: Array.from(new Uint8Array(arrayBuffer)),
-                    audioType: 'audio/webm',
-                    language: document.documentElement.lang || 'ru'
-                }, (response) => {
-                    if (response && response.transcription) {
-                        logPopup('Transcription received: ' + response.transcription);
-                        voiceFeedback.textContent = response.transcription;
-                    } else {
-                        logPopup('Transcription failed: ' + (response && response.error), 'error');
-                        showError('Ошибка распознавания: ' + (response && response.error));
-                        voiceFeedback.textContent = 'Ошибка распознавания.';
-                    }
-                });
+                try {
+                    chrome.runtime.sendMessage({
+                        type: 'TRANSCRIBE_AUDIO',
+                        audioData: Array.from(new Uint8Array(arrayBuffer)),
+                        audioType: 'audio/webm',
+                        language: document.documentElement.lang || 'ru'
+                    }, async (response) => {
+                        try {
+                            if (response && response.transcription) {
+                                // Show formatting animation
+                                voiceFeedback.textContent = 'Форматирование...';
+                                voiceFeedback.style.display = 'block';
+                                voiceFeedback.classList.add('show');
+                                // Send transcription to LLM for formatting
+                                chrome.runtime.sendMessage({
+                                    type: 'FORMAT_TRANSCRIPTION',
+                                    text: response.transcription,
+                                    language: document.documentElement.lang || 'ru'
+                                }, (formatResp) => {
+                                if (formatResp && formatResp.success && formatResp.formatted_text) {
+                                    // Success case - show the formatted text
+                                    voiceFeedback.textContent = formatResp.formatted_text;
+                                    voiceFeedback.style.display = 'block';
+                                    voiceFeedback.classList.add('show');
+                                    logPopup('Formatting succeeded, showing formatted text');
+                                } else {
+                                    // Error case - handle and show appropriate error message
+                                    const errorMsg = formatResp && formatResp.error ? formatResp.error : 'Unknown error';
+                                    logPopup('Formatting failed: ' + errorMsg, 'error');
+                                    showError('Ошибка форматирования: ' + errorMsg);
+                                    
+                                    // Fallback to showing unformatted text with warning
+                                    voiceFeedback.textContent = response.transcription + ' [Без форматирования]';
+                                    voiceFeedback.style.display = 'block';
+                                    voiceFeedback.classList.add('show');
+                                }
+                                });
+                            } else {
+                                logPopup('Transcription failed: ' + (response && response.error ? response.error : 'Unknown error'), 'error');
+                                showError('Ошибка распознавания: ' + (response && response.error ? response.error : 'Неизвестная ошибка'));
+                                voiceFeedback.textContent = 'Ошибка распознавания.';
+                                voiceFeedback.style.display = 'block';
+                                voiceFeedback.classList.add('show');
+                            }
+                        } catch (callbackError) {
+                            logPopup('Error handling transcription response: ' + callbackError.message, 'error');
+                            voiceFeedback.textContent = 'Ошибка обработки результата.';
+                            voiceFeedback.style.display = 'block';
+                            voiceFeedback.classList.add('show');
+                        }
+                    });
+                } catch (sendError) {
+                    logPopup('Error sending audio for transcription: ' + sendError.message, 'error');
+                    voiceFeedback.textContent = 'Ошибка отправки аудио.';
+                    voiceFeedback.style.display = 'block';
+                    voiceFeedback.classList.add('show');
+                }
             };
             popupMediaRecorder.start();
         } catch (error) {
             logPopup('Microphone access denied or error: ' + error.message, 'error');
-            showError('Нет доступа к микрофону: ' + error.message);
             voiceFeedback.textContent = 'Нет доступа к микрофону.';
+            voiceFeedback.style.display = 'block';
+            voiceFeedback.classList.add('show');
+            updateVoiceToggleIcon(false);
         }
     }
 
@@ -353,6 +436,8 @@ document.addEventListener('DOMContentLoaded', () => {
             popupMediaRecorder.stop();
             popupMediaRecorder.stream.getTracks().forEach(track => track.stop());
             logPopup('Stopped recording and released microphone.');
+            // Defensive: ensure icon resets if stop is called outside normal flow
+            updateVoiceToggleIcon(false);
         }
     }
 
@@ -391,6 +476,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial load
     loadDocumentList();
+
+    // Remove initial feedback bar on DOMContentLoaded
+    if (voiceFeedback) {
+        voiceFeedback.textContent = '';
+        voiceFeedback.style.display = 'none';
+    }
 
     // Listen for messages from background script
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
