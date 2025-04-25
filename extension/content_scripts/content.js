@@ -6,30 +6,130 @@ window.COMPLIT_API_URL = 'http://localhost:8000/api/v1';
 // Enable detailed debug logging
 const DEBUG_MODE = true;
 
+// Track extension connection state
+let isExtensionConnected = true;
+let connectionCheckInterval = null;
+
+function checkExtensionConnection() {
+    if (!chrome || !chrome.runtime) {
+        isExtensionConnected = false;
+        showContextInvalidatedError();
+        return false;
+    }
+    
+    try {
+        // Attempt to use the chrome.runtime API as a test
+        chrome.runtime.getURL('');
+        
+        // If we get here, connection is working
+        if (!isExtensionConnected) {
+            // We've reconnected!
+            isExtensionConnected = true;
+            hideContextInvalidatedError();
+            return true;
+        }
+        return true;
+    } catch (e) {
+        isExtensionConnected = false;
+        showContextInvalidatedError();
+        return false;
+    }
+}
+
+// Start checking connection periodically
+function startConnectionMonitoring() {
+    if (connectionCheckInterval) return;
+    connectionCheckInterval = setInterval(checkExtensionConnection, 5000); // Check every 5 seconds
+    checkExtensionConnection(); // Check immediately
+}
+
+// Initialize connection monitoring
+startConnectionMonitoring();
+
 function showContextInvalidatedError() {
     // Remove any existing error notification first
-    const existing = document.getElementById('komplit-context-error');
-    if (existing) existing.remove();
+    const existing = document.getElementById('milashka-context-error');
+    if (existing) return; // Already showing
     
     const errorBar = document.createElement('div');
-    errorBar.id = 'komplit-context-error';
+    errorBar.id = 'milashka-context-error';
     Object.assign(errorBar.style, {
         position: 'fixed',
         top: '0',
         left: '0',
         right: '0',
-        backgroundColor: 'black',
+        backgroundColor: 'rgba(0,0,0,0.9)',
         color: 'white',
-        padding: '12px',
+        padding: '14px',
         textAlign: 'center',
         zIndex: '999999',
         cursor: 'pointer',
-        fontFamily: 'system-ui'
+        fontFamily: 'Montserrat, system-ui',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: '10px',
+        transition: 'all 0.3s ease'
     });
     
-    errorBar.textContent = 'Extension needs to be reloaded. Click here to refresh the page';
+    // Add warning icon
+    const icon = document.createElement('span');
+    icon.innerHTML = '⚠️';
+    icon.style.fontSize = '18px';
+    errorBar.appendChild(icon);
+    
+    // Add text content
+    const textSpan = document.createElement('span');
+    textSpan.textContent = '"Комплит" отключен. Нажмите здесь, чтобы перезагрузить страницу';
+    errorBar.appendChild(textSpan);
+    
+    // Add reload button
+    const reloadBtn = document.createElement('button');
+    reloadBtn.textContent = 'Перезагрузить';
+    Object.assign(reloadBtn.style, {
+        marginLeft: '10px',
+        padding: '6px 14px',
+        backgroundColor: 'white',
+        color: 'black',
+        border: 'none',
+        borderRadius: '20px',
+        cursor: 'pointer',
+        fontFamily: 'Montserrat, system-ui',
+        fontSize: '14px'
+    });
+    errorBar.appendChild(reloadBtn);
+    
+    // Click handlers
     errorBar.onclick = () => window.location.reload();
+    reloadBtn.onclick = (e) => {
+        e.stopPropagation();
+        window.location.reload();
+    };
+    
+    // Animation
+    errorBar.style.transform = 'translateY(-100%)';
     document.body.appendChild(errorBar);
+    
+    // Animate in
+    setTimeout(() => {
+        errorBar.style.transform = 'translateY(0)';
+    }, 10);
+}
+
+function hideContextInvalidatedError() {
+    const existing = document.getElementById('milashka-context-error');
+    if (!existing) return;
+    
+    // Animate out
+    existing.style.transform = 'translateY(-100%)';
+    
+    // Remove after animation
+    setTimeout(() => {
+        if (existing.parentNode) {
+            existing.parentNode.removeChild(existing);
+        }
+    }, 300);
 }
 
 class SuggestionManager {
@@ -58,15 +158,15 @@ class SuggestionManager {
     }
 
     cancelStream(source = 'unknown') {
-        console.log(`[MilashkaAI] cancelStream called from: ${source}`);
+        console.log(`[Complete] cancelStream called from: ${source}`);
         if (this.abortController) {
             // Save the stack trace before aborting
             const stackTrace = new Error().stack;
-            console.log('[MilashkaAI] Abort controller stack:', stackTrace);
+            console.log('[Complete] Abort controller stack:', stackTrace);
             
             this.abortController.abort();
             this.abortController = null;
-            console.log(`[MilashkaAI] Completion cancelled from: ${source}`);
+            console.log(`[Complete] Completion cancelled from: ${source}`);
         }
         if (this.debounceTimer) {
             clearTimeout(this.debounceTimer);
@@ -92,7 +192,7 @@ class SuggestionManager {
     ensureOverlay(element) {
         // Only wrap once
         if (element.parentNode && element.parentNode.classList && element.parentNode.classList.contains('milashka-input-wrapper')) {
-            console.log('[MilashkaAI] ensureOverlay: already wrapped');
+            console.log('[Complete] ensureOverlay: already wrapped');
             return element.parentNode;
         }
         // Remove any old wrapper (if present)
@@ -111,10 +211,10 @@ class SuggestionManager {
             wrapper.style.height = element.offsetHeight + 'px';
             element.parentNode.insertBefore(wrapper, element);
             wrapper.appendChild(element);
-            console.log('[MilashkaAI] ensureOverlay: wrapper created');
+            console.log('[Complete] ensureOverlay: wrapper created');
             return wrapper;
         } catch (e) {
-            console.error('[MilashkaAI] ensureOverlay: failed to create overlay', e);
+            console.error('[Complete] ensureOverlay: failed to create overlay', e);
             return null;
         }
     }
@@ -144,7 +244,7 @@ class SuggestionManager {
         this.activeInputElement = element;
         const wrapper = this.ensureOverlay(element);
         if (!wrapper) {
-            console.error('[MilashkaAI] displaySuggestion: could not get wrapper for element', element);
+            console.error('[Complete] displaySuggestion: could not get wrapper for element', element);
             return;
         }
         // Remove any old overlays
@@ -153,21 +253,22 @@ class SuggestionManager {
         // Create overlay if needed
         this.suggestionElement = document.createElement('div');
         this.suggestionElement.className = 'milashka-suggestion-overlay';
-        // Style to match input
+        // Style to match input - enhanced visibility
         const style = window.getComputedStyle(element);
         Object.assign(this.suggestionElement.style, {
             position: 'absolute',
             left: style.paddingLeft,
             top: style.paddingTop,
-            color: '#999',
+            color: '#333', // Darker color for better visibility
             pointerEvents: 'none',
             font: style.font,
             whiteSpace: 'pre-wrap',
-            opacity: 0.9, // Increased for better visibility
-            zIndex: 1000, // Increased z-index to make sure it's on top
+            opacity: 0.95, // Increased for better visibility
+            zIndex: 999999, // Much higher z-index to ensure visibility
             width: '100%',
             height: '100%',
             overflow: 'hidden',
+            backgroundColor: 'transparent', // Ensure background is transparent
         });
         // Show only the part after the user's input
         const value = element.value || '';
@@ -178,7 +279,7 @@ class SuggestionManager {
         let after = suggestionText;
         
         // Log for debugging
-        console.log('[MilashkaAI] Displaying suggestion:', {
+        console.log('[Complete] Displaying suggestion:', {
             valueLength: value.length,
             caretPos,
             suggestionText,
@@ -190,7 +291,7 @@ class SuggestionManager {
         this.suggestionElement.innerHTML =
             `<span style="visibility:hidden">${this.escapeHtml(before)}</span><span style="color:#333;background-color:#f0f0f0;border-radius:2px;">${this.escapeHtml(after)}</span>`;
         wrapper.appendChild(this.suggestionElement);
-        console.log('[MilashkaAI] displaySuggestion: overlay appended');
+        console.log('[Complete] displaySuggestion: overlay appended');
     }
 
     escapeHtml(str) {
@@ -298,7 +399,7 @@ class EditingUI {
         const selectedText = selection.toString().trim();
         
         if (!selectedText) {
-            console.warn('[MilashkaAI] No text selected');
+            console.warn('[Complete] No text selected');
             return false;
         }
 
@@ -331,7 +432,7 @@ class EditingUI {
     showFloatingMenu(x, y) {
         // Only show menu if we have a valid selection captured
         if (!this.originalText) {
-            console.warn('[MilashkaAI] Cannot show menu without selection');
+            console.warn('[Complete] Cannot show menu without selection');
             return;
         }
 
@@ -344,102 +445,43 @@ class EditingUI {
             position: 'fixed',
             left: `${x}px`,
             top: `${y}px`,
-            backgroundColor: 'white',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-            borderRadius: '4px',
-            padding: '8px',
             zIndex: '1000000',
             display: 'flex',
             flexDirection: 'column',
-            gap: '8px'
         });
-
+        
+        ContextMenuStyler.applyStylesToMenu(this.menu);
+        
         // Create input container
         const inputWrapper = document.createElement('div');
         inputWrapper.style.display = 'flex';
         inputWrapper.style.gap = '8px';
 
-        // Create voice button
-        const voiceButton = document.createElement('button');
-        Object.assign(voiceButton.style, {
-            padding: '6px 12px',
-            backgroundColor: 'black',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '16px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minWidth: '36px'
-        });
-        
-        // Create and set microphone icon image
-        const micIcon = document.createElement('img');
-        const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
-        micIcon.src = micIconUrl;
-        // Store absolute URL to prevent path issues
-        micIcon.setAttribute('data-original-src', micIconUrl);
-        micIcon.style.width = '16px';
-        micIcon.style.height = '16px';
-        voiceButton.appendChild(micIcon);
-        
+        // Create voice button with capsule shape
+        const voiceButton = ContextMenuStyler.createVoiceButton();
+        // Set initial icon state to microphone (not recording)
+        ContextMenuStyler.updateMicIcon(voiceButton, false); 
         voiceButton.onclick = () => {
             if (this.speechManager.isRecording) {
-                // Reset to mic icon
-                voiceButton.innerHTML = '';
-                const micIcon = document.createElement('img');
-                const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
-                micIcon.src = micIconUrl;
-                // Store absolute URL to prevent path issues
-                micIcon.setAttribute('data-original-src', micIconUrl);
-                micIcon.style.width = '16px';
-                micIcon.style.height = '16px';
-                voiceButton.appendChild(micIcon);
-                voiceButton.style.backgroundColor = 'black';
+                ContextMenuStyler.updateMicIcon(voiceButton, false);
                 this.speechManager.stopRecording();
             } else {
-                voiceButton.innerHTML = '';
-                const stopIcon = document.createElement('img');
-                const stopIconUrl = chrome.runtime.getURL('icons/stop.png');
-                stopIcon.src = stopIconUrl;
-                stopIcon.setAttribute('data-original-src', stopIconUrl);
-                stopIcon.style.width = '16px';
-                stopIcon.style.height = '16px';
-                voiceButton.appendChild(stopIcon);
-                voiceButton.style.backgroundColor = 'black';
+                ContextMenuStyler.updateMicIcon(voiceButton, true);
                 const input = this.menu.querySelector('.milashka-edit-input');
                 this.speechManager.startRecording(null, true, (formattedText) => {
                     if (input) {
                         input.value = formattedText;
-                        // Reset to mic icon
-                        voiceButton.innerHTML = '';
-                        const micIcon = document.createElement('img');
-                        const micIconUrl = chrome.runtime.getURL('icons/microphone.png');
-                        micIcon.src = micIconUrl;
-                        micIcon.setAttribute('data-original-src', micIconUrl);
-                        micIcon.style.width = '16px';
-                        micIcon.style.height = '16px';
-                        voiceButton.appendChild(micIcon);
-                        voiceButton.style.backgroundColor = 'black';
+                        ContextMenuStyler.updateMicIcon(voiceButton, false);
                     }
                 });
             }
         };
 
-        // Create input field
+        // Create input field with light gray background and capsule shape
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'milashka-edit-input';
-        Object.assign(input.style, {
-            width: '200px',
-            padding: '6px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            fontSize: '14px'
-        });
-        input.placeholder = 'Describe your edit';
+        ContextMenuStyler.styleInputField(input);
         input.setAttribute('autocomplete', 'off');
         input.setAttribute('autocorrect', 'off');
         input.setAttribute('autocapitalize', 'off');
@@ -448,38 +490,18 @@ class EditingUI {
         input.addEventListener('mousedown', e => e.stopPropagation());
         input.addEventListener('keydown', e => e.stopPropagation());
 
-        // Create buttons container
+        // Create buttons container with improved styling for centering
         const buttonWrapper = document.createElement('div');
-        buttonWrapper.style.display = 'flex';
-        buttonWrapper.style.gap = '4px';
-
-        // Create edit button
-        const editButton = document.createElement('button');
-        editButton.className = 'milashka-edit-button';
-        Object.assign(editButton.style, {
-            padding: '6px 12px',
-            backgroundColor: 'black',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            flex: 1
+        Object.assign(buttonWrapper.style, {
+            display: 'flex',
+            gap: '10px',
+            width: '100%',
+            justifyContent: 'center',
+            marginTop: '4px'
         });
-        editButton.textContent = 'Edit';
 
-        // Create cancel button
-        const cancelButton = document.createElement('button');
-        Object.assign(cancelButton.style, {
-            padding: '6px 12px',
-            backgroundColor: 'black',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer'
-        });
-        cancelButton.textContent = 'Cancel';
-
-        // Wire up button events
+        // Create edit button with capsule shape and fixed width
+        const editButton = ContextMenuStyler.createActionButton('Изменить', true);
         editButton.onclick = async () => {
             if (input.value) {
                 editButton.disabled = true;
@@ -489,6 +511,8 @@ class EditingUI {
             }
         };
 
+        // Create cancel button with capsule shape and fixed width
+        const cancelButton = ContextMenuStyler.createActionButton('Отмена', false);
         cancelButton.onclick = () => this.hideFloatingMenu();
 
         // Handle enter key in input
@@ -534,13 +558,13 @@ class EditingUI {
 
     async performEdit(prompt) {
         if (!this.originalText || !this.targetElement) {
-            console.error('[MilashkaAI] Cannot edit: no valid selection');
+            console.error('[Complete] Cannot edit: no valid selection');
             this.showFeedback('Cannot edit: no valid selection', 'error');
             return;
         }
 
         try {
-            console.log('[MilashkaAI] Sending edit request:', {
+            console.log('[Complete] Sending edit request:', {
                 text: this.originalText,
                 prompt: prompt
             });
@@ -552,9 +576,9 @@ class EditingUI {
                 language: document.documentElement.lang || 'en'
             });
 
-            console.log('[MilashkaAI] Received edit response:', response);
+            console.log('[Complete] Received edit response:', response);
 
-            console.log('[MilashkaAI] Response:', response);
+            console.log('[Complete] Response:', response);
             
             // The edited_text is actually in response.data.edited_text
             if (!response.edited_text) {
@@ -565,14 +589,14 @@ class EditingUI {
             this.showFeedback('Edit applied successfully', 'success');
 
         } catch (error) {
-            console.error('[MilashkaAI] Edit failed:', error);
+            console.error('[Complete] Edit failed:', error);
             this.showFeedback(`Edit failed: ${error.message}`, 'error');
         }
     }
 
     applyEdit(newText) {
         if (!this.targetElement) {
-            console.error('[MilashkaAI] Cannot apply edit: no target element');
+            console.error('[Complete] Cannot apply edit: no target element');
             return;
         }
 
@@ -617,7 +641,7 @@ class EditingUI {
                 element.dispatchEvent(new Event('input', { bubbles: true }));
             }
         } catch (error) {
-            console.error('[MilashkaAI] Error applying edit:', error);
+            console.error('[Complete] Error applying edit:', error);
             throw error;
         } finally {
             // Clear state
@@ -635,7 +659,7 @@ class EditingUI {
             bottom: '20px',
             right: '20px',
             padding: '12px 24px',
-            borderRadius: '4px',
+            borderRadius: '20px',
             color: 'white',
             zIndex: '1000001',
             backgroundColor: 'black', // All notification types are now black
@@ -796,7 +820,7 @@ class SpeechManager {
             left: '50%',
             transform: 'translateX(-50%)',
             padding: '12px 24px',
-            borderRadius: '4px',
+            borderRadius: '20px',
             color: 'white',
             zIndex: '1000001',
             boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
@@ -809,9 +833,9 @@ class SpeechManager {
 
     log(message, type = 'info') {
         if (type === 'error') {
-            console.error('[MilashkaAI][SpeechManager]', message);
+            console.error('[Complete][SpeechManager]', message);
         } else {
-            console.log('[MilashkaAI][SpeechManager]', message);
+            console.log('[Complete][SpeechManager]', message);
         }
     }
 }
@@ -819,6 +843,163 @@ class SpeechManager {
 function isValidInputElement(element) {
     return (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
            !element.classList.contains('milashka-edit-input');
+}
+
+/**
+ * ContextMenuStyler - Provides styling and UI enhancement functions for the context menu
+ * Merged from menu-styles.js
+ */
+class ContextMenuStyler {
+    static applyStylesToMenu(menu) {
+        // Add Montserrat font if not already added
+        if (!document.getElementById('milashka-font-style')) {
+            const fontStyle = document.createElement('style');
+            fontStyle.id = 'milashka-font-style';
+            fontStyle.textContent = `
+                @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap');
+                .milashka-floating-menu, .milashka-floating-menu * {
+                    font-family: 'Montserrat', sans-serif !important;
+                }
+            `;
+            document.head.appendChild(fontStyle);
+        }
+        
+        // Enhance main menu container - more rounded with better shadow
+        Object.assign(menu.style, {
+            backgroundColor: 'white',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.12)', // Lighter and more spread out shadow
+            borderRadius: '30px', // Much more rounded corners (higher than buttons' 20px radius)
+            padding: '16px', // Increased padding for more breathing room
+            gap: '12px', // Increased gap between elements
+            minWidth: '280px' // Set minimum width for better proportions
+        });
+    }
+    
+    static createVoiceButton() {
+        const voiceButton = document.createElement('button');
+        Object.assign(voiceButton.style, {
+            padding: '6px 12px',
+            backgroundColor: 'black',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px', // Capsule shape
+            cursor: 'pointer',
+            fontSize: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: '36px',
+            height: '36px'
+        });
+        
+        return voiceButton;
+    }
+    
+    static updateMicIcon(button, isRecording = false) {
+        // Clear previous content
+        button.innerHTML = '';
+        
+        // Create appropriate icon
+        const icon = document.createElement('img');
+        // Fix paths to use browser_extension:// protocol instead of relative paths
+        const iconPath = isRecording ? 
+            '../icons/stop.png' : 
+            '../icons/microphone.png';
+        try {
+            // Check if chrome.runtime is available
+            if (chrome && chrome.runtime) {
+                // Use extension URL for correct path
+                const iconUrl = chrome.runtime.getURL(iconPath);
+                icon.src = iconUrl;
+                
+                // Store path for future reference
+                icon.setAttribute('data-original-src', iconUrl);
+                
+                // Debug logging to help identify path issues
+                console.log('[Complete] Mic icon URL:', iconUrl);
+            } else {
+                // Fallback to using a data URI for microphone icon
+                if (isRecording) {
+                    // Simple stop icon as data URI
+                    icon.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" fill="white"/></svg>';
+                } else {
+                    // Simple microphone icon as data URI
+                    icon.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="6" r="3" fill="white"/><rect x="7" y="9" width="2" height="4" fill="white"/><rect x="5" y="13" width="6" height="1" fill="white"/></svg>';
+                }
+                console.warn('[Complete] Using fallback icons due to extension context issues');
+            }
+        } catch (e) {
+            // Fallback in case of errors
+            console.error('[Complete] Error loading icon:', e);
+            icon.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" stroke="white" fill="none"/></svg>';
+        }
+        
+        // Style icon - make it slightly bigger
+        icon.style.width = '20px'; // Increased from 18px
+        icon.style.height = '20px'; // Increased from 18px
+        
+        // Add to button
+        button.appendChild(icon);
+        
+        return icon;
+    }
+    
+    static styleInputField(input) {
+        Object.assign(input.style, {
+            width: '200px',
+            padding: '8px 12px',
+            border: '1px solid #e0e0e0',
+            backgroundColor: '#f5f5f5', // Light gray background
+            borderRadius: '30px', // Capsule shape
+            fontSize: '14px',
+            outline: 'none'
+        });
+        
+        // Change placeholder to Russian
+        input.placeholder = 'Опишите изменение';
+        
+        return input;
+    }
+    
+    static createActionButton(text, isPrimary = true) {
+        const button = document.createElement('button');
+        
+        Object.assign(button.style, {
+            padding: '12px 16px', // Increased padding for bigger buttons
+            backgroundColor: 'black',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px', // Capsule shape
+            cursor: 'pointer',
+            flex: '1', // Make buttons expand to fill available space
+            fontSize: '14px',
+            fontWeight: '500',
+            transition: 'all 0.2s ease',
+            minHeight: '44px', // Increased from 40px for bigger buttons
+            boxShadow: '0 2px 6px rgba(0,0,0,0.1)' // Subtle shadow for all buttons
+        });
+        
+        // Set Russian text
+        button.textContent = isPrimary ? 'Изменить' : 'Отмена';
+        
+        // Add hover effect for cancel button with red inner shadow
+        if (!isPrimary) {
+            // Initially add a subtle red inner shadow (more spread out)
+            button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1)';
+            
+            button.addEventListener('mouseover', () => {
+                // Stronger red inner shadow on hover
+                button.style.boxShadow = 'inset 0 0 4px 2px rgba(255,0,0,0.5), 0 2px 6px rgba(0,0,0,0.1)';
+            });
+            
+            button.addEventListener('mouseout', () => {
+                // Return to subtle red inner shadow
+                button.style.boxShadow = 'inset 0 0 3px 1px rgba(255,0,0,0.25), 0 2px 6px rgba(0,0,0,0.1)';
+            });
+        }
+        
+        return button;
+    }
 }
 
 // Initialize managers and UI
@@ -846,13 +1027,13 @@ document.addEventListener('input', async (event) => {
 
     // Set new debounce timer
     suggestionManager.debounceTimer = setTimeout(async () => {
-        console.log('[MilashkaAI] Autocomplete debounce triggered');
+        console.log('[Complete] Autocomplete debounce triggered');
         if (!suggestionManager.streamInProgress && !suggestionManager.justCanceledByKeystroke) {
             const textBeforeCursor = element.value.substring(0, element.selectionStart);
-            console.log('[MilashkaAI] Text before cursor:', textBeforeCursor?.substring(Math.max(0, textBeforeCursor.length - 50)));
+            console.log('[Complete] Text before cursor:', textBeforeCursor?.substring(Math.max(0, textBeforeCursor.length - 50)));
             
             if (textBeforeCursor && textBeforeCursor.trim().length > 3) {
-                console.log('[MilashkaAI] Sending streaming completion request');
+                console.log('[Complete] Sending streaming completion request');
                 
                 // Set up for streaming
                 suggestionManager.streamInProgress = true;
@@ -860,14 +1041,25 @@ document.addEventListener('input', async (event) => {
                 let lastSuggestionLength = 0;
                 
                 try {
+                    // Check if chrome.runtime is available before sending message
+                    if (!chrome || !chrome.runtime) {
+                        console.error('[Complete] Chrome runtime not available. Extension context may have been invalidated.');
+                        suggestionManager.streamInProgress = false;
+                        return;
+                    }
+                    
                     // Request streaming completion
                     const streamResponse = await chrome.runtime.sendMessage({
                         type: "GET_COMPLETION_STREAM",
                         current_text: textBeforeCursor,
                         language: document.documentElement.lang || 'en'
+                    }).catch(error => {
+                        console.error('[Complete] Error sending message to background script:', error);
+                        suggestionManager.streamInProgress = false;
+                        throw error; // Re-throw to be caught by outer try-catch
                     });
                     
-                    console.log('[MilashkaAI] Stream response initialized:', streamResponse);
+                    console.log('[Complete] Stream response initialized:', streamResponse);
                     
                     if (streamResponse && streamResponse.id) {
                         // Create abort controller for this stream
@@ -875,10 +1067,10 @@ document.addEventListener('input', async (event) => {
                         
                         // Store stream ID for debugging
                         const streamId = streamResponse.id || 'unknown';
-                        console.log(`[MilashkaAI] Using stream ID: ${streamId}`);
+                        console.log(`[Complete] Using stream ID: ${streamId}`);
                         
                         if (!streamId || streamId === 'unknown') {
-                            console.error('[MilashkaAI] Invalid stream ID received');
+                            console.error('[Complete] Invalid stream ID received');
                             suggestionManager.streamInProgress = false;
                         }
                         
@@ -886,22 +1078,37 @@ document.addEventListener('input', async (event) => {
                         while (!suggestionManager.abortController.signal.aborted) {
                             try {
                                 if (!streamResponse || !streamResponse.id) {
-                                    console.error('[MilashkaAI] Missing stream ID for READ_NEXT_CHUNK');
+                                    console.error('[Complete] Missing stream ID for READ_NEXT_CHUNK');
+                                    break;
+                                }
+                                
+                                // Check if runtime is still available before sending READ_NEXT_CHUNK
+                                if (!chrome || !chrome.runtime) {
+                                    console.error('[Complete] Chrome runtime not available for READ_NEXT_CHUNK. Extension context may have been invalidated.');
+                                    suggestionManager.streamInProgress = false;
+                                    showContextInvalidatedError();
                                     break;
                                 }
                                 
                                 const data = await chrome.runtime.sendMessage({
                                     type: "READ_NEXT_CHUNK",
                                     id: streamResponse.id
+                                }).catch(error => {
+                                    console.error('[Complete] Error sending READ_NEXT_CHUNK message:', error);
+                                    if (error.message && error.message.includes('Receiving end does not exist')) {
+                                        // Extension context has been invalidated
+                                        showContextInvalidatedError();
+                                    }
+                                    throw error; // Re-throw to be caught by outer try-catch
                                 });
                                 
                                 if (!data) {
-                                    console.error('[MilashkaAI] Received empty response from READ_NEXT_CHUNK');
+                                    console.error('[Complete] Received empty response from READ_NEXT_CHUNK');
                                     break;
                                 }
                                 
                                 if (data.done) {
-                                    console.log('[MilashkaAI] Stream complete');
+                                    console.log('[Complete] Stream complete');
                                     break;
                                 }
                                 
@@ -911,13 +1118,36 @@ document.addEventListener('input', async (event) => {
                                     // Only update UI if suggestion actually changed
                                     if (latestMessage.suggestion && 
                                         latestMessage.suggestion.length > lastSuggestionLength) {
-                                        console.log('[MilashkaAI] Received token:', latestMessage.token);
+                                        console.log('[Complete] Received token:', latestMessage.token);
                                         lastSuggestionLength = latestMessage.suggestion.length;
                                         // Only show the new completion, not the prompt + completion
                                         let completion = latestMessage.suggestion;
+                                        
+                                        // Log both before pruning to check for encoding issues
+                                        console.log('[Complete] Before slice check:', {
+                                            completionSample: completion.substring(0, 50),
+                                            textBeforeCursorSample: textBeforeCursor.substring(Math.max(0, textBeforeCursor.length - 50)),
+                                            completionStartsWithCursor: completion.startsWith(textBeforeCursor),
+                                            completionContainsCursor: completion.includes(textBeforeCursor)
+                                        });
+                                        
+                                        // Try to extract only the completion part
+                                        // For Cyrillic text, direct startsWith might fail due to encoding differences
+                                        // So we'll also try a substring comparison
                                         if (completion.startsWith(textBeforeCursor)) {
                                             completion = completion.slice(textBeforeCursor.length);
+                                        } else if (completion.includes(textBeforeCursor)) {
+                                            // If it contains the text but doesn't start with it exactly
+                                            // (can happen with Cyrillic text due to encoding)
+                                            completion = completion.substring(completion.indexOf(textBeforeCursor) + textBeforeCursor.length);
                                         }
+
+                                        // Debug the actual completion being shown
+                                        console.log('[Complete] Showing completion:', {
+                                            completionLength: completion.length,
+                                            completionSample: completion.substring(0, 30)
+                                        });
+                                        
                                         suggestionManager.displaySuggestion(element, completion);
                                         // Briefly flash the suggestion to indicate new tokens (subtle visual feedback)
                                         if (suggestionManager.suggestionElement) {
@@ -932,7 +1162,7 @@ document.addEventListener('input', async (event) => {
                                     }
                                 }
                             } catch (error) {
-                                console.error('[MilashkaAI] Streaming completion error:', error);
+                                console.error('[Complete] Streaming completion error:', error);
                                 break;
                             } finally {
                                 suggestionManager.streamInProgress = false;
@@ -940,15 +1170,15 @@ document.addEventListener('input', async (event) => {
                         }
                     }
                 } catch (error) {
-                    console.error('[MilashkaAI] Streaming completion error:', error);
+                    console.error('[Complete] Streaming completion error:', error);
                 } finally {
                     suggestionManager.streamInProgress = false;
                 }
             } else {
-                console.log('[MilashkaAI] Text too short for completion');
+                console.log('[Complete] Text too short for completion');
             }
         } else {
-            console.log('[MilashkaAI] Completion skipped - stream in progress:', 
+            console.log('[Complete] Completion skipped - stream in progress:', 
                         suggestionManager.streamInProgress, 
                         'just canceled:', 
                         suggestionManager.justCanceledByKeystroke);

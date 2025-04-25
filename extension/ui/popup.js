@@ -358,9 +358,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function logPopup(message, type = 'info') {
         if (type === 'error') {
-            console.error('[MilashkaAI][Popup]', message);
+            console.error('[Complete][Popup]', message);
         } else {
-            console.log('[MilashkaAI][Popup]', message);
+            console.log('[Complete][Popup]', message);
         }
     }
 

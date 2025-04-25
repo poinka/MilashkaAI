@@ -44,8 +44,8 @@ async def lifespan(app: FastAPI):
         unload_models()
 
 app = FastAPI(
-    title="MilashkaAI Server",
-    description="Backend API for MilashkaAI browser extension",
+    title="Complete Server",
+    description="Backend API for Complete browser extension",
     version="1.0.0",
     lifespan=lifespan
 )

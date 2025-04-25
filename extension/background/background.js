@@ -186,7 +186,7 @@ class BackgroundService {
     }
 
     async handleCompletion(request) {
-        console.log('[MilashkaAI] Handling completion request:', {
+        console.log('[Complete] Handling completion request:', {
             text_length: request.current_text?.length,
             text_sample: request.current_text?.substring(Math.max(0, (request.current_text?.length || 0) - 50)),
             language: request.language || 'ru'
@@ -202,11 +202,11 @@ class BackgroundService {
                 })
             });
             
-            console.log('[MilashkaAI] Completion API response:', response);
+            console.log('[Complete] Completion API response:', response);
             // Corrected field name from response.suggestion to response.completion
             return { suggestion: response.completion }; 
         } catch (error) {
-            console.error('[MilashkaAI] Completion API error:', error);
+            console.error('[Complete] Completion API error:', error);
             throw error;
         }
     }
@@ -215,7 +215,7 @@ class BackgroundService {
         try {
             const apiUrl = await this.getApiUrl();
             const url = `${apiUrl}/completion/stream`;
-            console.log(`[MilashkaAI] Starting streaming completion`);
+            console.log(`[Complete] Starting streaming completion`);
             
             const controller = new AbortController();
             let timeoutId = null;
@@ -224,7 +224,7 @@ class BackgroundService {
             const resetTimeout = () => {
                 if (timeoutId) clearTimeout(timeoutId);
                 timeoutId = setTimeout(() => {
-                    console.log('[MilashkaAI] Stream timeout');
+                    console.log('[Complete] Stream timeout');
                     controller.abort();
                 }, 5000); // 5 second timeout if no tokens received
             };
@@ -289,7 +289,7 @@ class BackgroundService {
                     } catch (error) {
                         if (timeoutId) clearTimeout(timeoutId);
                         if (error.name === 'AbortError') {
-                            console.log('[MilashkaAI] Stream aborted');
+                            console.log('[Complete] Stream aborted');
                             return { done: true };
                         }
                         throw error;
@@ -302,14 +302,14 @@ class BackgroundService {
                 }
             };
         } catch (error) {
-            console.error('[MilashkaAI] Stream error:', error);
+            console.error('[Complete] Stream error:', error);
             throw error;
         }
     }
 
     // Handler for reading the next chunk from a streaming response
     async handleReadNextChunk(request) {
-        console.log('[MilashkaAI] READ_NEXT_CHUNK called with request:', { 
+        console.log('[Complete] READ_NEXT_CHUNK called with request:', { 
             id: request.id,
             hasStream: !!request.stream,
             hasReader: !!request.responseReader
@@ -317,7 +317,7 @@ class BackgroundService {
         
         const streamId = request.id;
         if (!streamId) {
-            console.error('[MilashkaAI] Stream ID missing in READ_NEXT_CHUNK request');
+            console.error('[Complete] Stream ID missing in READ_NEXT_CHUNK request');
             return { done: true, error: "Stream ID is required" };
         }
         
@@ -326,7 +326,7 @@ class BackgroundService {
         // we'll store active streams in a map
         if (!this.activeStreams) {
             this.activeStreams = new Map();
-            console.log('[MilashkaAI] Initialized active streams map');
+            console.log('[Complete] Initialized active streams map');
         }
         
         const stream = this.activeStreams.get(streamId);
@@ -336,10 +336,10 @@ class BackgroundService {
                 this.activeStreams.set(streamId, {
                     readNextChunk: request.readNextChunk
                 });
-                console.log(`[MilashkaAI] New stream created with ID: ${streamId}`);
+                console.log(`[Complete] New stream created with ID: ${streamId}`);
                 return { id: streamId, done: false, messages: [] };
             } else {
-                console.error('[MilashkaAI] Stream not found and no initialization data provided',
+                console.error('[Complete] Stream not found and no initialization data provided',
                               { streamId, hasStream: !!request.stream, hasReadNextChunk: !!request.readNextChunk });
                 return { done: true, error: "Stream not found" };
             }
@@ -347,9 +347,9 @@ class BackgroundService {
         
         try {
             // Use the stream's readNextChunk function to get the next chunk
-            console.log(`[MilashkaAI] Reading next chunk from stream ${streamId}`);
+            console.log(`[Complete] Reading next chunk from stream ${streamId}`);
             if (!stream.readNextChunk || typeof stream.readNextChunk !== 'function') {
-                console.error(`[MilashkaAI] Invalid stream object for ${streamId}, missing readNextChunk function`);
+                console.error(`[Complete] Invalid stream object for ${streamId}, missing readNextChunk function`);
                 this.activeStreams.delete(streamId);
                 return { done: true, error: "Invalid stream object" };
             }
@@ -358,7 +358,7 @@ class BackgroundService {
             
             // Handle null or undefined result
             if (!result) {
-                console.error(`[MilashkaAI] Stream ${streamId} returned null/undefined result`);
+                console.error(`[Complete] Stream ${streamId} returned null/undefined result`);
                 this.activeStreams.delete(streamId);
                 return { done: true, messages: [] };
             }
@@ -366,14 +366,14 @@ class BackgroundService {
             // If the stream is done, clean up
             if (result.done) {
                 this.activeStreams.delete(streamId);
-                console.log(`[MilashkaAI] Stream ${streamId} completed and cleaned up`);
+                console.log(`[Complete] Stream ${streamId} completed and cleaned up`);
             }
             
             return result;
         } catch (error) {
             // Clean up on error
             this.activeStreams.delete(streamId);
-            console.error(`[MilashkaAI] Error reading from stream ${streamId}:`, error);
+            console.error(`[Complete] Error reading from stream ${streamId}:`, error);
             return { done: true, error: error.message || "Stream error" };
         }
     }
@@ -409,9 +409,15 @@ class BackgroundService {
         formData.append('language', request.language || 'ru');
 
         try {
+            // Log the exact URL being used for debugging
+            const apiUrl = await this.getApiUrl();
+            console.log('Base API URL:', apiUrl);
+            
             console.log('Sending audio to server for transcription...');
-            const response = await this.fetchAPI('/voice/transcribe', {
-                method: 'POST',
+            // Changed endpoint from '/voice/transcribe' to just '/transcribe'
+            // This is because the API URL already contains '/api/v1/voice'
+            const response = await this.fetchAPI('/transcribe', {
+                method: 'POST', 
                 body: formData
             });
             
@@ -424,17 +430,19 @@ class BackgroundService {
     }
 
     async handleEdit(request) {
-        console.log('[MilashkaAI] Handling edit request:', {
+        console.log('[Complete] Handling edit request:', {
             prompt: request.prompt,
             language: request.language,
             textLength: request.selected_text ? request.selected_text.length : 0
         });
-        
+
         try {
             const apiUrl = await this.getApiUrl();
-            console.log('[MilashkaAI] Using API URL:', apiUrl);
+            console.log('[Complete] Using API URL:', apiUrl);
             
-            const response = await this.fetchAPI('/editing/', {
+            // Fix for 422 error - use just the endpoint name without leading slash
+            // this avoids double-including /api/v1 which is already in the apiUrl
+            const response = await this.fetchAPI('editing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -443,11 +451,11 @@ class BackgroundService {
                     language: request.language || 'ru'
                 })
             });
-            
-            console.log('[MilashkaAI] Edit API response:', response);
-            
+
+            console.log('[Complete] Edit API response:', response);
+
             if (!response.edited_text) {
-                console.warn('[MilashkaAI] Warning: API returned empty edited_text');
+                console.warn('[Complete] Warning: API returned empty edited_text');
             }
             
             return {
@@ -457,7 +465,7 @@ class BackgroundService {
                 warning: response.warning
             };
         } catch (error) {
-            console.error('[MilashkaAI] Error in handleEdit:', error);
+            console.error('[Complete] Error in handleEdit:', error);
             throw error; // Re-throw to be caught by the message handler
         }
     }

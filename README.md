@@ -1,4 +1,4 @@
-# MilashkaAI Assistant
+# "Complete" Assistant
 
 A browser extension and server implementation for AI-powered text assistance with voice input support and RAG-enhanced context awareness.
 

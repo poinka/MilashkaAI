@@ -42,7 +42,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["ui/*", "lib/*"],
+      "resources": ["icons/*.png", "ui/*", "lib/*"],
       "matches": ["<all_urls>"]
     }
   ]
