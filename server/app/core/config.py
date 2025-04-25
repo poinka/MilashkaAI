@@ -3,6 +3,9 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
+    # Server settings
+    HOST: str = "0.0.0.0"  
+    PORT: int = 8000       
     # Project metadata
     PROJECT_NAME: str = "Комплит"
     VERSION: str = "1.0.0"
