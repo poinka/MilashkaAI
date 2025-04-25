@@ -90,6 +90,6 @@ def layout_parser(doc: Doc) -> Doc:
             elements.append({"type": "paragraph", "text": p})
     doc._.paragraphs = paragraphs
     doc._.elements = elements
-    logging.info(f"Processed text with layout_parser: {len(paragraphs)} paragraphs")
+    #logging.info(f"Processed text with layout_parser: {len(paragraphs)} paragraphs")
     
     return doc

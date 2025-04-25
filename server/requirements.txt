@@ -30,3 +30,4 @@ beautifulsoup4
 python-multipart
 spacy-layout
 aiofiles
+langdetect

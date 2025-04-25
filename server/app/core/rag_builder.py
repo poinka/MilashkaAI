@@ -14,15 +14,13 @@ import asyncio
 from datetime import datetime
 import os
 import re
+from langdetect import detect, LangDetectException
 
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        logging.FileHandler('/app/requirements.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('/app/requirements.log'), logging.StreamHandler()]
 )
 
 # Constants for schema
@@ -30,173 +28,287 @@ DOCUMENT_TABLE = "Document"
 CHUNK_TABLE = "Chunk"
 REQUIREMENT_TABLE = "Requirement"
 ENTITY_TABLE = "Entity"
+ACTOR_TABLE = "Actor"
+ACTION_TABLE = "Action"
+OBJECT_TABLE = "Object"
+RESULT_TABLE = "Result"
+PROJECT_ENTITY_TABLE = "ProjectEntity"
+USER_INTERACTION_TABLE = "UserInteraction"
+
 CONTAINS_RELATIONSHIP = "Contains"
 DESCRIBED_BY_RELATIONSHIP = "DescribedBy"
 REFERENCES_RELATIONSHIP = "References"
 IMPLEMENTS_RELATIONSHIP = "Implements"
+PERFORMS_RELATIONSHIP = "Performs"
+COMMITS_RELATIONSHIP = "Commits"
+ON_WHAT_PERFORMED_RELATIONSHIP = "On_what_performed"
+EXPECTS_RELATIONSHIP = "Expects"
+DEPENDS_ON_RELATIONSHIP = "Depends_on"
+RELATES_TO_RELATIONSHIP = "Relates_to"
+DESCRIBED_IN_RELATIONSHIP = "Described_in"
+LINKED_TO_FEEDBACK_RELATIONSHIP = "Linked_to_feedback"
 
-# Global variable for SpaCy model
+# Global variables for SpaCy models
 nlp: Language | None = None
+nlp_ru: Language | None = None
+nlp_en: Language | None = None
 
 def load_spacy_model():
-    """Loads the SpaCy model with layout parser."""
-    global nlp
-    if nlp is None:
-        try:
-            setup_spacy_extensions()  # Setup extensions first
-            model_name = "en_core_web_sm"
-            nlp = spacy.load(model_name)
-            if "layout_parser" not in nlp.pipe_names:
-                try:
-                    nlp.add_pipe("layout_parser", last=True)
-                    logging.info("Added spacy-layout parser to SpaCy pipeline.")
-                except Exception as e:
-                    logging.warning(f"Could not add spacy-layout parser. Layout-based chunking disabled. Error: {e}")
-            else:
-                logging.info("spacy-layout parser already in SpaCy pipeline.")
-            logging.info(f"SpaCy model '{model_name}' loaded successfully.")
-        except OSError:
-            logging.error(f"SpaCy model '{model_name}' not found. Download it: python -m spacy download {model_name}")
-            raise
-        except Exception as e:
-            logging.error(f"Error loading SpaCy model or layout parser: {e}", exc_info=True)
-            raise
+    """Loads SpaCy models for Russian and English with layout parser."""
+    global nlp_ru, nlp_en, nlp
+    nlp_ru = None
+    nlp_en = None
+    nlp = None
+    try:
+        setup_spacy_extensions()
+        nlp_en = spacy.load("en_core_web_lg")  # Upgraded to large model for better NER and parsing
+        if "layout_parser" not in nlp_en.pipe_names:
+            nlp_en.add_pipe("layout_parser", last=True)
+        logging.info("Loaded English SpaCy model 'en_core_web_lg'")
+        nlp_ru = spacy.load("ru_core_news_lg")
+        if "layout_parser" not in nlp_ru.pipe_names:
+            nlp_ru.add_pipe("layout_parser", last=True)
+        logging.info("Loaded Russian SpaCy model 'ru_core_news_lg'")
+    except Exception as e:
+        logging.error(f"Error loading SpaCy models: {e}", exc_info=True)
+        raise
 
-# Ensure SpaCy model is loaded
 load_spacy_model()
 
-def chunk_text(text: str, strategy: str = "layout", max_chunk_size: int = 50) -> List[str]:
-    """Splits text into chunks based on the chosen strategy."""
+def is_requirement_sentence(sent: spacy.tokens.Span, lang: str) -> bool:
+    """Checks if a sentence likely contains a requirement based on modal verbs or structure."""
+    if lang == 'en':
+        modal_verbs = ["shall", "must", "should", "will", "need", "require", "obligate", "have"]
+    else:  # Russian
+        modal_verbs = ["должен", "должна", "должно", "следует", "нужно", "обязан", "требуется"]
+    
+    for token in sent:
+        if token.lemma_.lower() in modal_verbs and token.pos_ == "VERB":
+            return True
+    return False
+
+def chunk_text(text: str, strategy: str = "layout", max_chunk_size: int = 512) -> List[tuple[str, int, int, str]]:
+    """Splits text into chunks with type and position info, preserving requirement context."""
+    global nlp
     if not nlp:
         logging.warning("SpaCy model not loaded, falling back to paragraph splitting.")
         strategy = "paragraph"
 
     chunks = []
     is_pdf = text.endswith('.pdf') and os.path.exists(text)
-    
+
     if is_pdf:
-        # Process PDF directly with layout_parser
         doc = nlp(text)
-        if hasattr(doc._, 'layout') and hasattr(doc._, 'paragraphs') and doc._.paragraphs:
-            chunks = [p for p in doc._.paragraphs if p.strip()]
-            logging.info(f"Chunked PDF using spacy-layout: {len(chunks)} chunks.")
-        elif hasattr(doc._, 'elements') and doc._.elements:
-            chunks = [e['text'] for e in doc._.elements if e['text'].strip() and e['type'] in ['paragraph', 'list_item']]
-            logging.info(f"Chunked PDF using layout elements: {len(chunks)} chunks.")
+        if hasattr(doc._, 'elements') and doc._.elements:
+            for e in doc._.elements:
+                chunk_text = e['text'].strip()
+                if not chunk_text:
+                    continue
+                chunk_type = ('list_item' if e['type'] == 'list_item' else
+                              'header' if re.match(r'^\d+\.\s+[A-Z][A-Za-z\s]+', chunk_text) else
+                              'paragraph')
+                start = e.get('start', text.find(chunk_text))
+                end = start + len(chunk_text)
+                chunks.append((chunk_text, start, end, chunk_type))
         else:
-            logging.warning("spacy-layout attributes not found for PDF, falling back to paragraph splitting.")
+            text = doc.text
             strategy = "paragraph"
-            text = doc.text  # Use extracted text
     else:
-        # Process text
         doc = nlp(text)
-        if strategy == "layout" and "layout_parser" in nlp.pipe_names:
-            if hasattr(doc._, 'elements') and doc._.elements:
-                chunks = [e['text'] for e in doc._.elements if e['text'].strip() and e['type'] in ['paragraph', 'list_item']]
-                logging.info(f"Chunked {'PDF' if is_pdf else 'text'} using layout elements: {len(chunks)} chunks.")
-            elif hasattr(doc._, 'paragraphs') and doc._.paragraphs:
-                chunks = [p for p in doc._.paragraphs if p.strip()]
-                logging.info(f"Chunked {'PDF' if is_pdf else 'text'} using spacy-layout: {len(chunks)} chunks.")
-            else:
-                logging.warning("spacy-layout attributes not found, falling back to paragraph splitting.")
-                strategy = "paragraph"
+        if strategy == "layout" and "layout_parser" in nlp.pipe_names and hasattr(doc._, 'elements') and doc._.elements:
+            for e in doc._.elements:
+                chunk_text = e['text'].strip()
+                if not chunk_text:
+                    continue
+                chunk_type = ('list_item' if e['type'] == 'list_item' or re.match(r'^\d+\.\s|^[\|\*\-]\s', chunk_text) else
+                              'header' if re.match(r'^\d+\.\s+[A-Z][A-Za-z\s]+', chunk_text) else
+                              'paragraph')
+                start = e.get('start', text.find(chunk_text))
+                end = start + len(chunk_text)
+                chunks.append((chunk_text, start, end, chunk_type))
+        else:
+            strategy = "paragraph"
 
     if strategy == "paragraph" or not chunks:
-        raw_chunks = text.split('\n')
-        chunks = [c.strip() for c in raw_chunks if c.strip()]
-        logging.info(f"Chunked text by paragraph: {len(chunks)} chunks.")
+        raw_chunks = [c.strip() for c in re.split(r'\n{2,}', text) if c.strip()]
+        last_end = 0
+        for c in raw_chunks:
+            start = text.find(c, last_end)
+            end = start + len(c)
+            chunk_type = ('header' if re.match(r'^\d+\.\s+[A-Z][A-Za-z\s]+', c) else
+                          'list_item' if re.match(r'^\d+\.\s|^[\|\*\-]\s', c) else
+                          'paragraph')
+            chunks.append((c, start, end, chunk_type))
+            last_end = end
 
-    elif strategy == "fixed":
-        if nlp:
-            doc = nlp(text)
-            tokens = [token.text for token in doc]
-            chunks = [' '.join(tokens[i:i + max_chunk_size]) for i in range(0, len(tokens), max_chunk_size)]
+    # Filter and refine chunks
+    final_chunks = []
+    for chunk_text, start, end, chunk_type in chunks:
+        # Skip very short chunks unless they are list items or headers
+        if len(chunk_text.split()) < 5 and chunk_type not in ['list_item', 'header']:
+            continue
+        # Split large chunks into smaller ones if they exceed max_chunk_size
+        if len(chunk_text) > max_chunk_size and chunk_type == 'paragraph':
+            sentences = [sent.text.strip() for sent in nlp(chunk_text).sents if sent.text.strip()]
+            current_chunk = ""
+            for sent in sentences:
+                if len(current_chunk) + len(sent) <= max_chunk_size:
+                    current_chunk += " " + sent
+                else:
+                    if current_chunk.strip():
+                        final_chunks.append((current_chunk.strip(), start, start + len(current_chunk), 'paragraph'))
+                        start += len(current_chunk) + 1
+                    current_chunk = sent
+            if current_chunk.strip():
+                final_chunks.append((current_chunk.strip(), start, start + len(current_chunk), 'paragraph'))
         else:
-            chunks = [text[i:i + max_chunk_size*5] for i in range(0, len(text), max_chunk_size*5)]
-        logging.info(f"Chunked text by fixed size: {len(chunks)} chunks.")
+            final_chunks.append((chunk_text, start, end, chunk_type))
 
-    logging.info(f"Chunks: {chunks}")
-    final_chunks = [chunk for chunk in chunks if len(chunk.split()) > 5]
-    logging.info(f"Filtered chunks (min length): {len(final_chunks)} chunks.")
+    logging.info(f"Created {len(final_chunks)} chunks: {[f'{t} ({len(c.split())} words)' for c, _, _, t in final_chunks[:5]]}")
     return final_chunks
 
-def extract_requirements(doc: spacy.tokens.Doc, doc_id: str) -> List[Dict[str, Any]]:
-    """Extracts requirements using dependency parsing and rule-based matching."""
-    requirements = []
-    matcher = Matcher(doc.vocab)
-    system_subjects = ["system", "api", "login", "process", "application", "module", "service", "interface"]
-    user_subjects = ["user", "users", "admin", "administrator"]
 
-    requirement_pattern = [
-        {"LOWER": {"IN": system_subjects}, "DEP": "nsubj"},
-        {"LEMMA": {"IN": ["shall", "must", "should", "need", "require", "obligate", "have"]}, "POS": "VERB"},
-        {"POS": "VERB", "OP": "+"},
-    ]
-    matcher.add("REQUIREMENT_PATTERN", [requirement_pattern])
+def extract_components(doc: spacy.tokens.Doc, doc_id: str, lang: str, chunks_with_info: List[tuple[str, int, int, str]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Extracts requirements, actors, actions, objects, results, and entities per chunk."""
+    components = {
+        "requirements": [],
+        "actors": [],
+        "actions": [],
+        "objects": [],
+        "results": [],
+        "documents": [{"doc_id": doc_id, "name": "Current Document", "type": "doc", "content": doc.text}],
+        "entities": []
+    }
 
-    matches = matcher(doc)
-    matched_sentences = set()
+    requirement_descriptions = set()
+    current_section = "unknown"
+    req_type = "functional"  # Default requirement type
 
-    for match_id, start, end in matches:
-        span = doc[start:end]
-        sent = span.sent
-        if sent in matched_sentences:
+    for chunk_idx, (chunk_text, start, end, chunk_type) in enumerate(chunks_with_info):
+        chunk_id = f"{doc_id}_chunk_{chunk_idx}"
+        logging.debug(f"Processing chunk {chunk_id}: type={chunk_type}, text={chunk_text[:100]}...")
+
+        if chunk_type == 'header':
+            current_section = chunk_text.strip().lower()
+            req_type = ("functional" if any(kw in current_section for kw in ["functional", "feature", "interface", "registration", "investigation", "prosecution", "search", "citizen", "navigation", "configuration"]) else
+                        "non-functional")
+            logging.debug(f"Detected section: {current_section}, setting req_type to {req_type}")
             continue
-        matched_sentences.add(sent)
-        req_type = "functional" if any(term in sent.text.lower() for term in ["function", "feature", "capability"]) else "non-functional"
-        req_id = f"req_{doc_id}_{len(requirements)}"
-        requirements.append({
-            "req_id": req_id,
-            "type": req_type,
-            "description": sent.text.strip()
+
+        chunk_doc = nlp(chunk_text)
+        
+        # Handle list items (typically single requirements)
+        if chunk_type == 'list_item' or re.match(r'^\d+\.\s|^[\|\*\-]\s', chunk_text):
+            req_text = chunk_text.strip()
+            if is_requirement_sentence(chunk_doc, lang) or re.match(r'^\d+\.\s|^[\|\*\-]\s', req_text):
+                req_id = f"req_{doc_id}_{len(components['requirements'])}"
+                req = {
+                    "req_id": req_id,
+                    "type": req_type,
+                    "description": req_text,
+                    "chunk_id": chunk_id,
+                    "section": current_section
+                }
+                components["requirements"].append(req)
+                requirement_descriptions.add(req_text)
+                logging.info(f"Extracted requirement from list_item: {req}")
+
+                # Extract components
+                for token in chunk_doc:
+                    if token.dep_ == "nsubj" and (token.ent_type_ or token.text.lower() in ["system", "user", "citizen", "police", "admin", "constable"]):
+                        actor_id = f"actor_{doc_id}_{len(components['actors'])}"
+                        components["actors"].append({"id": actor_id, "name": token.text, "description": f"Role: {token.text}"})
+                        req["actor"] = actor_id
+                    elif token.pos_ == "VERB" and token.dep_ == "ROOT":
+                        action_id = f"action_{doc_id}_{len(components['actions'])}"
+                        components["actions"].append({"id": action_id, "name": token.text, "description": f"Action: {token.text}"})
+                        req["action"] = action_id
+                    elif token.dep_ == "dobj" and token.pos_ in ["NOUN", "PROPN"]:
+                        object_id = f"object_{doc_id}_{len(components['objects'])}"
+                        components["objects"].append({"id": object_id, "name": token.text, "description": f"Object: {token.text}"})
+                        req["object"] = object_id
+                    elif token.dep_ == "prep" and token.text.lower() in (["for", "to", "with"] if lang == 'en' else ["для", "к", "с"]):
+                        result_id = f"result_{doc_id}_{len(components['results'])}"
+                        result_text = ' '.join([t.text for t in token.subtree])
+                        components["results"].append({"id": result_id, "description": f"Expected result: {result_text}"})
+                        req["result"] = result_id
+
+        # Handle paragraphs (may contain multiple requirements)
+        elif chunk_type == 'paragraph':
+            for sent in chunk_doc.sents:
+                sent_text = sent.text.strip()
+                if not sent_text:
+                    continue
+                sent_doc = nlp(sent_text)
+                if is_requirement_sentence(sent_doc, lang) or re.match(r'^\d+\.\s|^[\|\*\-]\s', sent_text):
+                    req_id = f"req_{doc_id}_{len(components['requirements'])}"
+                    req = {
+                        "req_id": req_id,
+                        "type": req_type,
+                        "description": sent_text,
+                        "chunk_id": chunk_id,
+                        "section": current_section
+                    }
+                    components["requirements"].append(req)
+                    requirement_descriptions.add(sent_text)
+                    logging.info(f"Extracted requirement from paragraph sentence: {req}")
+
+                    # Extract components
+                    for token in sent_doc:
+                        if token.dep_ == "nsubj" and (token.ent_type_ or token.text.lower() in ["system", "user", "citizen", "police", "admin", "constable"]):
+                            actor_id = f"actor_{doc_id}_{len(components['actors'])}"
+                            components["actors"].append({"id": actor_id, "name": token.text, "description": f"Role: {token.text}"})
+                            req["actor"] = actor_id
+                        elif token.pos_ == "VERB" and token.dep_ == "ROOT":
+                            action_id = f"action_{doc_id}_{len(components['actions'])}"
+                            components["actions"].append({"id": action_id, "name": token.text, "description": f"Action: {token.text}"})
+                            req["action"] = action_id
+                        elif token.dep_ == "dobj" and token.pos_ in ["NOUN", "PROPN"]:
+                            object_id = f"object_{doc_id}_{len(components['objects'])}"
+                            components["objects"].append({"id": object_id, "name": token.text, "description": f"Object: {token.text}"})
+                            req["object"] = object_id
+                        elif token.dep_ == "prep" and token.text.lower() in (["for", "to", "with"] if lang == 'en' else ["для", "к", "с"]):
+                            result_id = f"result_{doc_id}_{len(components['results'])}"
+                            result_text = ' '.join([t.text for t in token.subtree])
+                            components["results"].append({"id": result_id, "description": f"Expected result: {result_text}"})
+                            req["result"] = result_id
+
+    # Extract entities using NER from the entire document
+    for ent in doc.ents:
+        components["entities"].append({
+            "entity_id": f"ent_{doc_id}_{len(components['entities'])}",
+            "type": ent.label_.lower(),
+            "name": ent.text
         })
-        logging.info(f"Detected requirement: {sent.text}")
 
-    for sent in doc.sents:
-        if sent in matched_sentences:
-            continue
-        modal_token = None
-        subject_token = None
-        for token in sent:
-            if token.lemma_.lower() in ["shall", "must", "should", "need", "require", "obligate", "have"] and token.dep_ in ("aux", "ROOT"):
-                modal_token = token
-                for child in token.head.children:
-                    if child.dep_ == "nsubj":
-                        subject_token = child
-                        break
-                break
-        if not modal_token or not subject_token:
-            continue
-        subject_text = subject_token.text.lower()
-        is_system_related = any(subject_text in system_subject for system_subject in system_subjects)
-        is_user_related = any(subject_text in user_subject for user_subject in user_subjects)
-        if is_user_related:
-            verb = modal_token.head.text.lower()
-            system_verbs = ["authenticate", "access", "interact", "use"]
-            if not any(verb in system_verb for system_verb in system_verbs):
-                continue
-        if not is_system_related and not (is_user_related and any(verb in system_verb for system_verb in system_verbs)):
-            continue
-        req_type = "functional" if any(term in sent.text.lower() for term in ["function", "feature", "capability"]) else "non-functional"
-        req_id = f"req_{doc_id}_{len(requirements)}"
-        requirements.append({
-            "req_id": req_id,
-            "type": req_type,
-            "description": sent.text.strip()
-        })
-        logging.info(f"Detected requirement (dependency parsing): {sent.text}")
+    # logging.info(f"Extracted {len(components['requirements'])} requirements for doc_id: {doc_id}: {components['requirements']}")
+    # logging.info(f"Extracted {len(components['actors'])} actors for doc_id: {doc_id}: {components['actors']}")
+    # logging.info(f"Extracted {len(components['actions'])} actions for doc_id: {doc_id}: {components['actions']}")
+    # logging.info(f"Extracted {len(components['objects'])} objects for doc_id: {doc_id}: {components['objects']}")
+    # logging.info(f"Extracted {len(components['results'])} results for doc_id: {doc_id}: {components['results']}")
+    # logging.info(f"Extracted {len(components['entities'])} entities for doc_id: {doc_id}: {components['entities']}")
 
-    return requirements
+    return components
+
 
 async def build_rag_graph_from_text(doc_id: str, filename: str, text: str, db: KuzuDBClient = None):
     logging.info(f"Starting RAG graph build for doc_id: {doc_id}")
+    try:
+        lang = detect(text)
+        logging.info(f"Detected language: {lang}")
+    except LangDetectException:
+        lang = "en"
+        logging.warning("Language detection failed, defaulting to English")
 
-    # Preprocess text
+    global nlp_ru, nlp_en, nlp
+    nlp = nlp_en if lang == "en" else nlp_ru
+    if not nlp:
+        logging.error(f"No SpaCy model loaded for language: {lang}")
+        raise ValueError(f"No SpaCy model for {lang}")
+
     text = re.sub(r'\n+', '\n', text.strip())
-    text = re.sub(r'^\s*\d+\.\s*', '', text, flags=re.MULTILINE)
     lines = [line.strip() + '.' if line.strip() and not line.strip().endswith('.') else line.strip() for line in text.split('\n')]
     text = ' '.join(lines)
-    logging.info(f"Preprocessed text: {text[:200]}...")
 
     try:
         if db is None:
@@ -209,7 +321,13 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str, db: K
         embedding_pipeline = get_embedding_pipeline()
         now = datetime.now().isoformat()
 
-        # Ensure document node
+        chunks_with_info = chunk_text(text)
+        text_chunks = [chunk for chunk, _, _, _ in chunks_with_info]
+        embeddings = embedding_pipeline.encode(text_chunks, batch_size=32)
+
+        doc = nlp(text)
+        components = extract_components(doc, doc_id, lang=lang, chunks_with_info=chunks_with_info)
+
         conn.execute(f"""
             MERGE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
             ON CREATE SET d.filename = $filename, d.processed_at = $processed_at, d.status = $status, d.created_at = $created_at, d.updated_at = $updated_at
@@ -219,98 +337,90 @@ async def build_rag_graph_from_text(doc_id: str, filename: str, text: str, db: K
             "status": "processing", "created_at": now, "updated_at": now
         })
 
-        # Chunk text and generate embeddings
-        text_chunks = chunk_text(text)
-        embeddings = embedding_pipeline.encode(text_chunks, batch_size=32)
-
-        # Extract requirements and entities
-        doc = nlp(text)
-        requirements = extract_requirements(doc, doc_id)
-        entities = []
-        for sent in doc.sents:
-            for ent in sent.ents:
-                entities.append({
-                    "entity_id": f"ent_{doc_id}_{len(entities)}",
-                    "type": ent.label_.lower(),
-                    "name": ent.text
-                })
-        logging.info(f"Extracted {len(requirements)} requirements")
-
-        # Insert chunks and relationships
-        for i, (chunked_text, embedding) in enumerate(zip(text_chunks, embeddings)):
+        for i, (chunks, start, end, chunk_type) in enumerate(chunks_with_info):
             chunk_id = f"{doc_id}_chunk_{i}"
             conn.execute(f"""
-                CREATE (c:{CHUNK_TABLE} {{chunk_id: $chunk_id, doc_id: $doc_id,
-                    text: $text, embedding: $embedding}})
+                CREATE (c:{CHUNK_TABLE} {{chunk_id: $chunk_id, doc_id: $doc_id, text: $text, embedding: $embedding}})
             """, {
-                "chunk_id": chunk_id, "doc_id": doc_id, "text": chunked_text,
-                "embedding": embedding.tolist()
+                "chunk_id": chunk_id, "doc_id": doc_id, "text": chunks, "embedding": embeddings[i].tolist()
             })
             conn.execute(f"""
                 MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}}),
                       (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
                 CREATE (d)-[:{CONTAINS_RELATIONSHIP}]->(c)
             """, {"doc_id": doc_id, "chunk_id": chunk_id})
-            for req in requirements:
-                if req["description"] in chunked_text:
-                    conn.execute(f"""
-                        MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
-                              (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
-                        CREATE (r)-[:{DESCRIBED_BY_RELATIONSHIP}]->(c)
-                    """, {"req_id": req["req_id"], "chunk_id": chunk_id})
 
-        # Insert requirements
-        for req in requirements:
+        for actor in components["actors"]:
+            conn.execute(f"CREATE (a:{ACTOR_TABLE} {{id: $id, name: $name, description: $description}})", actor)
+        for action in components["actions"]:
+            conn.execute(f"CREATE (a:{ACTION_TABLE} {{id: $id, name: $name, description: $description}})", action)
+        for obj in components["objects"]:
+            conn.execute(f"CREATE (o:{OBJECT_TABLE} {{id: $id, name: $name, description: $description}})", obj)
+        for result in components["results"]:
+            conn.execute(f"CREATE (r:{RESULT_TABLE} {{id: $id, description: $description}})", result)
+        for ent in components["entities"]:
             conn.execute(f"""
-                CREATE (r:{REQUIREMENT_TABLE} {{req_id: $req_id, type: $type,
-                    description: $description, created_at: $created_at}})
+                CREATE (e:{ENTITY_TABLE} {{entity_id: $entity_id, type: $type, name: $name}})
             """, {
-                "req_id": req["req_id"], "type": req["type"],
-                "description": req["description"], "created_at": now
+                "entity_id": ent["entity_id"], "type": ent["type"], "name": ent["name"]
             })
+
+        for req in components["requirements"]:
+            conn.execute(f"""
+                CREATE (r:{REQUIREMENT_TABLE} {{req_id: $req_id, type: $type, description: $description, created_at: $created_at}})
+            """, {
+                "req_id": req["req_id"], "type": req["type"], "description": req["description"], "created_at": now
+            })
+            if "actor" in req:
+                conn.execute(f"""
+                    MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
+                          (a:{ACTOR_TABLE} {{id: $actor_id}})
+                    CREATE (r)-[:{PERFORMS_RELATIONSHIP}]->(a)
+                """, {"req_id": req["req_id"], "actor_id": req["actor"]})
+            if "action" in req:
+                conn.execute(f"""
+                    MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
+                          (a:{ACTION_TABLE} {{id: $action_id}})
+                    CREATE (r)-[:{COMMITS_RELATIONSHIP}]->(a)
+                """, {"req_id": req["req_id"], "action_id": req["action"]})
+            if "object" in req:
+                conn.execute(f"""
+                    MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
+                          (o:{OBJECT_TABLE} {{id: $object_id}})
+                    CREATE (r)-[:{ON_WHAT_PERFORMED_RELATIONSHIP}]->(o)
+                """, {"req_id": req["req_id"], "object_id": req["object"]})
+            if "result" in req:
+                conn.execute(f"""
+                    MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
+                          (res:{RESULT_TABLE} {{id: $result_id}})
+                    CREATE (r)-[:{EXPECTS_RELATIONSHIP}]->(res)
+                """, {"req_id": req["req_id"], "result_id": req["result"]})
+            if "chunk_id" in req:
+                conn.execute(f"""
+                    MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
+                          (c:{CHUNK_TABLE} {{chunk_id: $chunk_id}})
+                    CREATE (r)-[:{DESCRIBED_BY_RELATIONSHIP}]->(c)
+                """, {"req_id": req["req_id"], "chunk_id": req["chunk_id"]})
             conn.execute(f"""
                 MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
                       (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
                 CREATE (r)-[:{REFERENCES_RELATIONSHIP}]->(d)
             """, {"req_id": req["req_id"], "doc_id": doc_id})
 
-        # Insert entities
-        for ent in entities:
-            conn.execute(f"""
-                CREATE (e:{ENTITY_TABLE} {{entity_id: $entity_id, type: $type, name: $name}})
-            """, {
-                "entity_id": ent["entity_id"], "type": ent["type"], "name": ent["name"]
-            })
-            for req in requirements:
-                if ent["name"].lower() in req["description"].lower():
-                    conn.execute(f"""
-                        MATCH (r:{REQUIREMENT_TABLE} {{req_id: $req_id}}),
-                              (e:{ENTITY_TABLE} {{entity_id: $entity_id}})
-                        CREATE (r)-[:{IMPLEMENTS_RELATIONSHIP}]->(e)
-                    """, {"req_id": req["req_id"], "entity_id": ent["entity_id"]})
-
-        # Update document status
-        now = datetime.now().isoformat()
         conn.execute(f"""
             MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
             SET d.status = 'indexed', d.updated_at = $updated_at
-        """, {
-            "doc_id": doc_id,
-            "updated_at": now
-        })
+        """, {"doc_id": doc_id, "updated_at": now})
 
-        logging.info(f"Built RAG graph with {len(requirements)} requirements for doc_id: {doc_id}")
+        logging.info(f"Built RAG graph with {len(components['requirements'])} requirements for doc_id: {doc_id}")
     except Exception as e:
         logging.error(f"Error building RAG graph: {e}", exc_info=True)
-        try:
-            if db is not None:
-                now = datetime.now().isoformat()
-                db.execute(f"""
-                    MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
-                    SET d.status = 'error', d.updated_at = $updated_at, d.error = $error_msg
-                """, {"doc_id": doc_id, "updated_at": now, "error_msg": str(e)})
-        except Exception as db_err:
-            logging.error(f"Failed to update document status to error: {db_err}")
+        if db is not None:
+            now = datetime.now().isoformat()
+            db.execute(f"""
+                MATCH (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
+                SET d.status = 'error', d.updated_at = $updated_at, d.error = $error_msg
+            """, {"doc_id": doc_id, "updated_at": now, "error_msg": str(e)})
         raise
     finally:
         if 'close_db' in locals() and close_db:
@@ -379,7 +489,6 @@ async def reindex_document(doc_id: str, db: KuzuDBClient = Depends(get_db)):
             logging.warning(f"File with original extension not found at {potential_path}")
             if os.path.exists(base_path):
                 file_path = base_path
-                logging.warning(f"Found file without extension at {base_path}")
 
     if not file_path:
         possible_files = [f for f in os.listdir(uploads_dir) if f.startswith(doc_id)]
@@ -443,13 +552,4 @@ async def reindex_document(doc_id: str, db: KuzuDBClient = Depends(get_db)):
         return {"chunks_indexed": chunks_count, "status": "indexed"}
     except Exception as e:
         logging.error(f"Error reindexing document {doc_id}: {e}", exc_info=True)
-        try:
-            now = datetime.now().isoformat()
-            conn.execute(f"""
-                MERGE (d:{DOCUMENT_TABLE} {{doc_id: $doc_id}})
-                ON CREATE SET d.status = 'error', d.error = $error_msg, d.created_at = $now, d.updated_at = $now
-                ON MATCH SET d.status = 'error', d.error = $error_msg, d.updated_at = $now
-            """, {"doc_id": doc_id, "error_msg": str(e), "now": now})
-        except Exception as db_err:
-            logging.error(f"Failed to update document status to error: {db_err}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -10,11 +10,25 @@ DOCUMENT_TABLE = "Document"
 CHUNK_TABLE = "Chunk"
 REQUIREMENT_TABLE = "Requirement"
 ENTITY_TABLE = "Entity"
+ACTOR_TABLE = "Actor"
+ACTION_TABLE = "Action"
+OBJECT_TABLE = "Object"
+RESULT_TABLE = "Result"
+PROJECT_ENTITY_TABLE = "ProjectEntity"
+USER_INTERACTION_TABLE = "UserInteraction"
 
 CONTAINS_RELATIONSHIP = "Contains"
 DESCRIBED_BY_RELATIONSHIP = "DescribedBy"
 REFERENCES_RELATIONSHIP = "References"
 IMPLEMENTS_RELATIONSHIP = "Implements"
+PERFORMS_RELATIONSHIP = "Performs"
+COMMITS_RELATIONSHIP = "Commits"
+ON_WHAT_PERFORMED_RELATIONSHIP = "On_what_performed"
+EXPECTS_RELATIONSHIP = "Expects"
+DEPENDS_ON_RELATIONSHIP = "Depends_on"
+RELATES_TO_RELATIONSHIP = "Relates_to"
+DESCRIBED_IN_RELATIONSHIP = "Described_in"
+LINKED_TO_FEEDBACK_RELATIONSHIP = "Linked_to_feedback"
 
 def get_db():
     """FastAPI dependency that yields a KuzuDBClient (with .execute())."""
@@ -46,73 +60,41 @@ class KuzuDBClient:
             self.conn = Connection(self.kuzu_db)
 
             try:
-                # Node tables with CONSISTENT schema - no created_at in CHUNK_TABLE
-                self.conn.execute(f"""
-                    CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
-                        doc_id STRING,
-                        filename STRING,
-                        processed_at STRING,
-                        status STRING,
-                        created_at STRING,
-                        updated_at STRING,
-                        error STRING,
-                        PRIMARY KEY (doc_id)
-                    )
-                """)
+                # Создание схемы
+                schema_queries = [
+                    f"CREATE NODE TABLE IF NOT EXISTS {ACTOR_TABLE} (id STRING PRIMARY KEY, name STRING, description STRING)",
+                    f"CREATE NODE TABLE IF NOT EXISTS {ACTION_TABLE} (id STRING PRIMARY KEY, name STRING, description STRING)",
+                    f"CREATE NODE TABLE IF NOT EXISTS {OBJECT_TABLE} (id STRING PRIMARY KEY, name STRING, description STRING)",
+                    f"CREATE NODE TABLE IF NOT EXISTS {RESULT_TABLE} (id STRING PRIMARY KEY, description STRING)",
+                    f"CREATE NODE TABLE IF NOT EXISTS {PROJECT_ENTITY_TABLE} (id STRING PRIMARY KEY, type STRING, name STRING, description STRING)",
+                    f"""
+                        CREATE NODE TABLE IF NOT EXISTS {DOCUMENT_TABLE} (
+                            doc_id STRING PRIMARY KEY,
+                            filename STRING,
+                            type STRING,
+                            content STRING,
+                            status STRING,
+                            created_at STRING,
+                            updated_at STRING,
+                            processed_at STRING
+                        )
+                        """,           
+                    f"CREATE NODE TABLE IF NOT EXISTS {USER_INTERACTION_TABLE} (id STRING PRIMARY KEY, type STRING, suggestion_text STRING, user_reaction STRING, date STRING)",
+                    f"CREATE NODE TABLE IF NOT EXISTS {REQUIREMENT_TABLE} (req_id STRING PRIMARY KEY, type STRING, description STRING, created_at STRING)",
+                    f"CREATE REL TABLE IF NOT EXISTS {PERFORMS_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {ACTOR_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {COMMITS_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {ACTION_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {ON_WHAT_PERFORMED_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {OBJECT_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {EXPECTS_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {RESULT_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {DEPENDS_ON_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {REQUIREMENT_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {RELATES_TO_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {PROJECT_ENTITY_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {DESCRIBED_IN_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {DOCUMENT_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {LINKED_TO_FEEDBACK_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {USER_INTERACTION_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {CONTAINS_RELATIONSHIP} (FROM {DOCUMENT_TABLE} TO {CHUNK_TABLE})",
+                    f"CREATE REL TABLE IF NOT EXISTS {DESCRIBED_BY_RELATIONSHIP} (FROM {REQUIREMENT_TABLE} TO {CHUNK_TABLE})",
+                ]
+                for query in schema_queries:
+                    self.conn.execute(query)
 
-                self.conn.execute(f"""
-                    CREATE NODE TABLE IF NOT EXISTS {CHUNK_TABLE} (
-                        chunk_id STRING,
-                        doc_id STRING,
-                        text STRING,
-                        embedding FLOAT[],
-                        PRIMARY KEY (chunk_id)
-                    )
-                """)
-
-                self.conn.execute(f"""
-                    CREATE NODE TABLE IF NOT EXISTS {REQUIREMENT_TABLE} (
-                        req_id STRING,
-                        type STRING,
-                        description STRING,
-                        created_at STRING,
-                        PRIMARY KEY (req_id)
-                    )
-                """)
-
-                self.conn.execute(f"""
-                    CREATE NODE TABLE IF NOT EXISTS {ENTITY_TABLE} (
-                        entity_id STRING,
-                        type STRING,
-                        name STRING,
-                        PRIMARY KEY (entity_id)
-                    )
-                """)
-
-                # Relationship tables
-                self.conn.execute(f"""
-                    CREATE REL TABLE IF NOT EXISTS {CONTAINS_RELATIONSHIP} (
-                        FROM {DOCUMENT_TABLE} TO {CHUNK_TABLE}
-                    )
-                """)
-                
-                self.conn.execute(f"""
-                    CREATE REL TABLE IF NOT EXISTS {DESCRIBED_BY_RELATIONSHIP} (
-                        FROM {REQUIREMENT_TABLE} TO {CHUNK_TABLE}
-                    )
-                """)
-                
-                self.conn.execute(f"""
-                    CREATE REL TABLE IF NOT EXISTS {REFERENCES_RELATIONSHIP} (
-                        FROM {REQUIREMENT_TABLE} TO {DOCUMENT_TABLE}
-                    )
-                """)
-                
-                self.conn.execute(f"""
-                    CREATE REL TABLE IF NOT EXISTS {IMPLEMENTS_RELATIONSHIP} (
-                        FROM {REQUIREMENT_TABLE} TO {ENTITY_TABLE}
-                    )
-                """)
                 
             except Exception as e:
                 logger.error(f"Error ensuring core tables exist: {e}")
