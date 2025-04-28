@@ -20,10 +20,9 @@ RUN pip install --upgrade pip
 COPY requirements.txt .
 
 RUN export PATH="$PATH:/root/.cargo/bin" && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir \
-        https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.7.1/en_core_web_lg-3.7.1.tar.gz \
-        https://github.com/explosion/spacy-models/releases/download/ru_core_news_lg-3.7.0/ru_core_news_lg-3.7.0.tar.gz
+    pip install -r requirements.txt && \
+    python -m spacy download en_core_web_lg && \
+    python -m spacy download ru_core_news_lg
 
 RUN pip install --no-binary=llama-cpp-python llama-cpp-python
 

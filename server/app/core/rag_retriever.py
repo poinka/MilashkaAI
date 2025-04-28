@@ -129,7 +129,7 @@ async def retrieve_relevant_chunks(
         context_lang = preferred_language if preferred_language in ["ru", "en"] else query_lang
 
         # Generate query embedding
-        query_vector = embedding_pipeline.encode([query_text])[0]
+        query_vector = embedding_pipeline.encode([str(query_text)])[0]
         query_vector_list = [float(x) for x in query_vector.tolist()]
         max_abs = max(map(abs, query_vector_list), default=1)
         if max_abs > 1e6:
